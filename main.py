@@ -1,6 +1,5 @@
 import os
 import uuid
-import json
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +7,11 @@ from fastapi.responses import FileResponse
 
 from pdf_report import generate_eudr_pdf
 
-app = FastAPI(title="EUDR API", version="2.0")
+
+app = FastAPI(
+    title="EUDR SaaS API",
+    version="1.0.0"
+)
 
 # ---------------- CORS ----------------
 
@@ -20,24 +23,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------- ENV ----------------
+
 API_KEY = os.getenv("API_KEY", "EUDR-SECRET-123")
 
-REGISTRY_PATH = "/tmp/audits.json"
+# ---------------- MEMORY STORE (V1 SaaS) ----------------
 
-
-# ---------------- INIT REGISTRY ----------------
-
-def load_registry():
-    if not os.path.exists(REGISTRY_PATH):
-        return {}
-    with open(REGISTRY_PATH, "r") as f:
-        return json.load(f)
-
-
-def save_registry(data):
-    with open(REGISTRY_PATH, "w") as f:
-        json.dump(data, f)
-
+AUDITS = {}
 
 # ---------------- ROOT ----------------
 
@@ -45,14 +37,15 @@ def save_registry(data):
 def root():
     return {
         "status": "online",
-        "service": "EUDR API",
-        "version": "2.0"
+        "service": "EUDR SaaS API",
+        "version": "1.0.0"
     }
 
 
-# ---------------- RISK (MVP) ----------------
+# ---------------- RISK ENGINE (NO EARTH ENGINE) ----------------
 
 def compute_risk(lat: float, lon: float):
+
     seed = abs(int((lat * 1000) + (lon * 1000)))
     risk = seed % 100
 
@@ -82,20 +75,17 @@ def eudr_check(payload: dict):
 
     audit_id = str(uuid.uuid4())
 
-    registry = load_registry()
-
-    registry[audit_id] = {
+    AUDITS[audit_id] = {
         "audit_id": audit_id,
         "farm_name": name,
-        "lat": lat,
-        "lon": lon,
+        "latitude": lat,
+        "longitude": lon,
         "risk_score": risk_score,
-        "risk_level": risk_level
+        "risk_level": risk_level,
+        "status": "PRELIMINARY RECORD"
     }
 
-    save_registry(registry)
-
-    return registry[audit_id]
+    return AUDITS[audit_id]
 
 
 # ---------------- PDF ----------------
@@ -106,20 +96,21 @@ def eudr_pdf(payload: dict):
     if payload.get("api_key") != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    audit_id = payload.get("audit_id")
+    audit_id = str(uuid.uuid4())
 
-    registry = load_registry()
-
-    if audit_id not in registry:
-        raise HTTPException(status_code=404, detail="Audit not found")
-
-    audit = registry[audit_id]
+    AUDITS[audit_id] = {
+        "audit_id": audit_id,
+        "farm_name": payload.get("name"),
+        "latitude": float(payload.get("lat")),
+        "longitude": float(payload.get("lon")),
+        "status": "PDF GENERATED"
+    }
 
     file_path = generate_eudr_pdf(
         audit_id=audit_id,
-        name=audit["farm_name"],
-        lat=audit["lat"],
-        lon=audit["lon"],
+        name=payload.get("name"),
+        lat=float(payload.get("lat")),
+        lon=float(payload.get("lon")),
     )
 
     return {
@@ -128,7 +119,7 @@ def eudr_pdf(payload: dict):
     }
 
 
-# ---------------- DOWNLOAD ----------------
+# ---------------- DOWNLOAD PDF ----------------
 
 @app.get("/download/{audit_id}")
 def download(audit_id: str):
@@ -145,14 +136,12 @@ def download(audit_id: str):
     )
 
 
-# ---------------- VERIFY ----------------
+# ---------------- VERIFY PUBLIC ----------------
 
 @app.get("/eudr/verify/{audit_id}")
 def verify(audit_id: str):
 
-    registry = load_registry()
-
-    if audit_id not in registry:
+    if audit_id not in AUDITS:
         raise HTTPException(status_code=404, detail="Audit not found")
 
-    return registry[audit_id]
+    return AUDITS[audit_id]
