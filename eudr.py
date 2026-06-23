@@ -15,22 +15,39 @@ GFW_API_KEY = os.getenv("GFW_API_KEY")
 EE_CREDENTIALS = os.getenv("EE_CREDENTIALS", "/etc/secrets/earth-engine-credentials.json")
 EE_PROJECT = os.getenv("EE_PROJECT", "superb-gear-473018-k1")
 
+# Variable pour suivre l'état d'initialisation
+EE_INITIALIZED = False
+
+print("🔍 Initializing Earth Engine...")
+print(f"📁 EE_CREDENTIALS path: {EE_CREDENTIALS}")
+print(f"📁 File exists: {os.path.exists(EE_CREDENTIALS)}")
+
 try:
+    # Essayer avec le fichier de credentials
     if os.path.exists(EE_CREDENTIALS):
+        print("📖 Reading credentials file...")
         with open(EE_CREDENTIALS, "r") as f:
             credentials_info = json.load(f)
+        print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
+        
         credentials = ee.ServiceAccountCredentials(
             credentials_info["client_email"],
             key_data=json.dumps(credentials_info)
         )
         ee.Initialize(credentials, project=EE_PROJECT)
-        print("🌍 Earth Engine initialized successfully")
+        EE_INITIALIZED = True
+        print("🌍 Earth Engine initialized successfully with service account")
     else:
+        # Essayer sans credentials (authentification par défaut)
+        print("⚠️ No credentials file found, trying default authentication...")
         ee.Initialize(project=EE_PROJECT)
+        EE_INITIALIZED = True
         print("🌍 Earth Engine initialized with default credentials")
 except Exception as e:
     print(f"⚠️ Earth Engine initialization failed: {e}")
+    print("ℹ️ Will use GFW or fallback data sources")
 
+# ========== DATABASE ==========
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -48,6 +65,7 @@ def init_db():
         eudr_compliant TEXT,
         tree_cover INTEGER,
         loss_year INTEGER,
+        source TEXT,
         status TEXT,
         issuer TEXT,
         signature TEXT,
@@ -80,6 +98,7 @@ def compute_risk_gfw(lat: float, lon: float):
         elif "treeCover" in data:
             tree_cover = data.get("treeCover", 0)
         
+        print(f"🛰️ GFW: tree_cover={tree_cover}")
         return {
             "tree_cover": tree_cover,
             "loss_year": 0,
@@ -92,6 +111,11 @@ def compute_risk_gfw(lat: float, lon: float):
 # ========== EARTH ENGINE API ==========
 def compute_risk_ee(lat: float, lon: float):
     print("🌍 Trying Earth Engine...")
+    
+    if not EE_INITIALIZED:
+        print("⚠️ Earth Engine not initialized, skipping...")
+        return None
+    
     try:
         point = ee.Geometry.Point(lon, lat)
         dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
@@ -129,6 +153,7 @@ def compute_risk_ee(lat: float, lon: float):
 def compute_risk(lat: float, lon: float):
     print("========== compute_risk() called ==========")
     print(f"Lat: {lat}, Lon: {lon}")
+    print(f"EE_INITIALIZED: {EE_INITIALIZED}")
     
     def fallback():
         seed = abs(int((lat * 1000) + (lon * 1000)))
@@ -147,11 +172,17 @@ def compute_risk(lat: float, lon: float):
         loss_year = result["loss_year"]
         source = result["source"]
         if tree_cover > 30 and loss_year > 2020:
-            risk_score = 85; risk_level = "HIGH"; compliant = "NON COMPLIANT"
+            risk_score = 85
+            risk_level = "HIGH"
+            compliant = "NON COMPLIANT"
         elif tree_cover > 30 and loss_year <= 2020:
-            risk_score = 50; risk_level = "MEDIUM"; compliant = "COMPLIANT"
+            risk_score = 50
+            risk_level = "MEDIUM"
+            compliant = "COMPLIANT"
         else:
-            risk_score = 15; risk_level = "LOW"; compliant = "COMPLIANT"
+            risk_score = 15
+            risk_level = "LOW"
+            compliant = "COMPLIANT"
         return {
             "risk_score": risk_score,
             "risk_level": risk_level,
@@ -168,11 +199,17 @@ def compute_risk(lat: float, lon: float):
         loss_year = result["loss_year"]
         source = result["source"]
         if tree_cover > 30 and loss_year > 2020:
-            risk_score = 85; risk_level = "HIGH"; compliant = "NON COMPLIANT"
+            risk_score = 85
+            risk_level = "HIGH"
+            compliant = "NON COMPLIANT"
         elif tree_cover > 30 and loss_year <= 2020:
-            risk_score = 50; risk_level = "MEDIUM"; compliant = "COMPLIANT"
+            risk_score = 50
+            risk_level = "MEDIUM"
+            compliant = "COMPLIANT"
         else:
-            risk_score = 15; risk_level = "LOW"; compliant = "COMPLIANT"
+            risk_score = 15
+            risk_level = "LOW"
+            compliant = "COMPLIANT"
         return {
             "risk_score": risk_score,
             "risk_level": risk_level,
@@ -186,6 +223,7 @@ def compute_risk(lat: float, lon: float):
     print("⚠️ Using fallback")
     return fallback()
 
+# ========== AUDIT FUNCTIONS ==========
 def create_audit(name: str, lat: float, lon: float):
     audit_id = str(uuid.uuid4())
     result = compute_risk(lat, lon)
@@ -201,6 +239,7 @@ def create_audit(name: str, lat: float, lon: float):
         "eudr_compliant": result["eudr_compliant"],
         "tree_cover": result.get("tree_cover", 0),
         "loss_year": result.get("loss_year", 0),
+        "source": result.get("source", "unknown"),
         "status": "CREATED",
         "issuer": "Tierras de Montaña",
         "signature": signature,
@@ -210,7 +249,11 @@ def create_audit(name: str, lat: float, lon: float):
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
-        INSERT INTO audits VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO audits (
+            audit_id, farm_name, latitude, longitude, 
+            risk_score, risk_level, eudr_compliant, 
+            tree_cover, loss_year, source, status, issuer, signature, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         audit["audit_id"],
         audit["farm_name"],
@@ -221,6 +264,7 @@ def create_audit(name: str, lat: float, lon: float):
         audit["eudr_compliant"],
         audit["tree_cover"],
         audit["loss_year"],
+        audit["source"],
         audit["status"],
         audit["issuer"],
         audit["signature"],
@@ -251,8 +295,9 @@ def get_audit(audit_id: str):
         "eudr_compliant": row[6],
         "tree_cover": row[7],
         "loss_year": row[8],
-        "status": row[9],
-        "issuer": row[10],
-        "signature": row[11],
-        "created_at": row[12]
+        "source": row[9],
+        "status": row[10],
+        "issuer": row[11],
+        "signature": row[12],
+        "created_at": row[13]
     }
