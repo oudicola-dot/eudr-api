@@ -87,18 +87,31 @@ def verify_audit(audit_id: str, signature: str):
 
 @app.get("/download/{audit_id}")
 def download_pdf(audit_id: str, signature: str):
+
+    print("========== DOWNLOAD ==========")
+    print("AUDIT:", audit_id)
+
     if not verify_signature(audit_id, signature):
-        raise HTTPException(status_code=403, detail="Invalid signature")
-    
+        print("INVALID SIGNATURE")
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid signature"
+        )
+
     audit = get_audit(audit_id)
-    if not audit:
-        raise HTTPException(status_code=404, detail="Audit not found")
-    
-    file_path = f"/tmp/{audit_id}.pdf"
-    
-    if not pathlib.Path(file_path).exists():
-        generate_eudr_pdf(
-            audit_id=audit_id,
+
+    print("AUDIT DATA:", audit)
+
+    if audit is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Audit not found"
+        )
+
+    try:
+
+        file_path = generate_eudr_pdf(
+            audit_id=audit["audit_id"],
             name=audit["farm_name"],
             lat=audit["latitude"],
             lon=audit["longitude"],
@@ -108,13 +121,23 @@ def download_pdf(audit_id: str, signature: str):
             tree_cover=audit.get("tree_cover", 0),
             loss_year=audit.get("loss_year", 0)
         )
-    
-    return FileResponse(
-        file_path,
-        media_type="application/pdf",
-        filename=f"EUDR_{audit_id}.pdf"
-    )
 
+        print("PDF GENERATED:", file_path)
+
+        return FileResponse(
+            path=file_path,
+            media_type="application/pdf",
+            filename=f"EUDR_{audit_id}.pdf"
+        )
+
+    except Exception as e:
+
+        print("PDF ERROR:", str(e))
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 @app.get("/audit/{audit_id}", response_class=HTMLResponse)
 def audit_page(audit_id: str):
     audit = get_audit(audit_id)
