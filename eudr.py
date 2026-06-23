@@ -35,34 +35,40 @@ def init_db():
     conn.close()
 
 def compute_risk(lat: float, lon: float):
-    """Appelle GFW API ou fallback simulation"""
-    
+
     def fallback():
-        seed = abs(int((lat * 1000) + (lon * 1000)))
-        risk = seed % 100
-        if risk < 30:
-            return {"risk_score": risk, "risk_level": "LOW", "eudr_compliant": "COMPLIANT", "tree_cover": 20, "loss_year": 0, "source": "fallback"}
-        elif risk < 70:
-            return {"risk_score": risk, "risk_level": "MEDIUM", "eudr_compliant": "COMPLIANT", "tree_cover": 40, "loss_year": 2010, "source": "fallback"}
-        else:
-            return {"risk_score": risk, "risk_level": "HIGH", "eudr_compliant": "NON COMPLIANT", "tree_cover": 50, "loss_year": 2022, "source": "fallback"}
-    
+        return {
+            "risk_score": 50,
+            "risk_level": "MEDIUM",
+            "eudr_compliant": "COMPLIANT",
+            "tree_cover": 0,
+            "loss_year": 0,
+            "source": "fallback"
+        }
+
     if not GFW_API_KEY:
         return fallback()
-    
+
     try:
-    print("========== GFW DEBUG ==========")
-    print("API KEY:", GFW_API_KEY[:8] + "..." if GFW_API_KEY else "NONE")
+        print("========== GFW DEBUG ==========")
+        print("LAT:", lat)
+        print("LON:", lon)
+        print("API KEY PRESENT:", bool(GFW_API_KEY))
 
-    response = requests.get(
-        "https://data-api.globalforestwatch.org",
-        headers={"x-api-key": GFW_API_KEY},
-        timeout=10
-    )
+        response = requests.get(
+            "https://data-api.globalforestwatch.org",
+            headers={"x-api-key": GFW_API_KEY},
+            timeout=10
+        )
 
-    print("STATUS:", response.status_code)
-    print("BODY:")
-    print(response.text[:3000])
+        print("STATUS:", response.status_code)
+        print("BODY:")
+        print(response.text[:3000])
+
+    except Exception as e:
+        print("DEBUG ERROR:", str(e))
+
+    print("========== END DEBUG ==========")
 
     return fallback()
         
