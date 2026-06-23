@@ -3,15 +3,20 @@ import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi.responses import FileResponse
 
+from eudr import create_audit, get_audit
 from pdf_report import generate_eudr_pdf
 
 
+# ---------------- APP ----------------
+
 app = FastAPI(
-    title="EUDR SaaS API",
-    version="1.0.0"
+    title="EUDR API",
+    version="1.0"
 )
+
 
 # ---------------- CORS ----------------
 
@@ -23,13 +28,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- ENV ----------------
+
+# ---------------- CONFIG ----------------
 
 API_KEY = os.getenv("API_KEY", "EUDR-SECRET-123")
 
-# ---------------- MEMORY STORE (V1 SaaS) ----------------
+BASE_URL = os.getenv(
+    "BASE_URL",
+    "https://eudr-api-mi0x.onrender.com"
+)
 
-AUDITS = {}
 
 # ---------------- ROOT ----------------
 
@@ -37,85 +45,94 @@ AUDITS = {}
 def root():
     return {
         "status": "online",
-        "service": "EUDR SaaS API",
-        "version": "1.0.0"
+        "service": "EUDR API",
+        "version": "1.0"
     }
 
 
-# ---------------- RISK ENGINE (NO EARTH ENGINE) ----------------
-
-def compute_risk(lat: float, lon: float):
-
-    seed = abs(int((lat * 1000) + (lon * 1000)))
-    risk = seed % 100
-
-    if risk < 30:
-        level = "LOW"
-    elif risk < 70:
-        level = "MEDIUM"
-    else:
-        level = "HIGH"
-
-    return risk, level
-
-
-# ---------------- CHECK ----------------
+# ---------------- CHECK (CREATE AUDIT) ----------------
 
 @app.post("/eudr-check")
 def eudr_check(payload: dict):
-
-    if payload.get("api_key") != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
 
     name = payload.get("name")
     lat = float(payload.get("lat"))
     lon = float(payload.get("lon"))
 
-    risk_score, risk_level = compute_risk(lat, lon)
+    audit, error = create_audit(
+        api_key=payload.get("api_key"),
+        expected_key=API_KEY,
+        name=name,
+        lat=lat,
+        lon=lon
+    )
 
-    audit_id = str(uuid.uuid4())
+    if error:
+        raise HTTPException(status_code=401, detail=error)
 
-    AUDITS[audit_id] = {
+    audit_id = audit["audit_id"]
+
+    # build links
+    audit["verify_url"] = f"{BASE_URL}/eudr/verify/{audit_id}"
+    audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}"
+
+    return audit
+
+
+# ---------------- VERIFY ----------------
+
+@app.get("/eudr/verify/{audit_id}")
+def verify(audit_id: str):
+
+    audit = get_audit(audit_id)
+
+    if not audit:
+        raise HTTPException(status_code=404, detail="Audit not found")
+
+    return {
         "audit_id": audit_id,
-        "farm_name": name,
-        "latitude": lat,
-        "longitude": lon,
-        "risk_score": risk_score,
-        "risk_level": risk_level,
-        "status": "PRELIMINARY RECORD"
+        "farm_name": audit["farm_name"],
+        "risk_level": audit["risk_level"],
+        "risk_score": audit["risk_score"],
+        "status": audit["status"],
+        "issuer": "Tierras de Montaña",
+        "message": "EUDR PRELIMINARY AUDIT RECORD"
     }
 
-    return AUDITS[audit_id]
 
-
-# ---------------- PDF ----------------
+# ---------------- PDF GENERATION ----------------
 
 @app.post("/eudr-pdf")
 def eudr_pdf(payload: dict):
 
-    if payload.get("api_key") != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    name = payload.get("name")
+    lat = float(payload.get("lat"))
+    lon = float(payload.get("lon"))
 
-    audit_id = str(uuid.uuid4())
+    audit, error = create_audit(
+        api_key=payload.get("api_key"),
+        expected_key=API_KEY,
+        name=name,
+        lat=lat,
+        lon=lon
+    )
 
-    AUDITS[audit_id] = {
-        "audit_id": audit_id,
-        "farm_name": payload.get("name"),
-        "latitude": float(payload.get("lat")),
-        "longitude": float(payload.get("lon")),
-        "status": "PDF GENERATED"
-    }
+    if error:
+        raise HTTPException(status_code=401, detail=error)
+
+    audit_id = audit["audit_id"]
 
     file_path = generate_eudr_pdf(
         audit_id=audit_id,
-        name=payload.get("name"),
-        lat=float(payload.get("lat")),
-        lon=float(payload.get("lon")),
+        name=name,
+        lat=lat,
+        lon=lon
     )
 
     return {
         "audit_id": audit_id,
-        "pdf_url": f"https://eudr-api-mi0x.onrender.com/download/{audit_id}"
+        "pdf_url": f"{BASE_URL}/download/{audit_id}",
+        "verify_url": f"{BASE_URL}/eudr/verify/{audit_id}"
     }
 
 
@@ -134,14 +151,3 @@ def download(audit_id: str):
         media_type="application/pdf",
         filename=f"EUDR_{audit_id}.pdf"
     )
-
-
-# ---------------- VERIFY PUBLIC ----------------
-
-@app.get("/eudr/verify/{audit_id}")
-def verify(audit_id: str):
-
-    if audit_id not in AUDITS:
-        raise HTTPException(status_code=404, detail="Audit not found")
-
-    return AUDITS[audit_id]
