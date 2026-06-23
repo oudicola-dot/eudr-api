@@ -1,55 +1,43 @@
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-import qrcode
-import hashlib
-import datetime
-import os
+import uuid
 
+def generate_eudr_pdf(data):
 
-def generate_certificate_id(data: dict):
+    file_name = f"EUDR_CERT_{uuid.uuid4().hex[:8]}.pdf"
+    file_path = f"./{file_name}"
 
-    raw = f"{data['name']}{data['lat']}{data['lon']}{datetime.datetime.utcnow()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def generate_qr(cert_id: str):
-
-    img = qrcode.make(f"EUDR CERTIFICATE ID: {cert_id}")
-    path = f"/tmp/{cert_id}.png"
-    img.save(path)
-    return path
-
-
-def generate_eudr_pdf(data, filename):
-
-    cert_id = generate_certificate_id(data)
-    qr_path = generate_qr(cert_id)
-
-    pdf_path = f"/tmp/{filename}"
-    doc = SimpleDocTemplate(pdf_path, pagesize=A4)
-
+    doc = SimpleDocTemplate(file_path)
     styles = getSampleStyleSheet()
-    story = []
 
-    story.append(Paragraph("EUDR DUE DILIGENCE CERTIFICATE", styles["Title"]))
-    story.append(Spacer(1, 12))
+    content = []
 
-    story.append(Paragraph(f"<b>Certificate ID:</b> {cert_id}", styles["Normal"]))
-    story.append(Paragraph(f"<b>Farm:</b> {data['name']}", styles["Normal"]))
-    story.append(Paragraph(f"<b>Latitude:</b> {data['lat']}", styles["Normal"]))
-    story.append(Paragraph(f"<b>Longitude:</b> {data['lon']}", styles["Normal"]))
-    story.append(Spacer(1, 12))
+    content.append(
+        Paragraph(
+            "EUDR DUE DILIGENCE STATEMENT",
+            styles["Title"]
+        )
+    )
 
-    story.append(Paragraph(f"<b>Forest cover:</b> {data.get('forest_cover', 'N/A')}", styles["Normal"]))
-    story.append(Paragraph(f"<b>Deforestation risk:</b> {data.get('post_2020_deforestation', 'N/A')}", styles["Normal"]))
-    story.append(Paragraph(f"<b>Status:</b> {data.get('eudr_risk', 'UNKNOWN')}", styles["Normal"]))
+    content.append(Spacer(1,12))
 
-    story.append(Spacer(1, 12))
+    text = f"""
+    Farm: {data['name']}<br/>
+    Latitude: {data['lat']}<br/>
+    Longitude: {data['lon']}<br/><br/>
 
-    story.append(Paragraph("This certificate is generated automatically using satellite data (Google Earth Engine) and is intended for EUDR compliance verification.", styles["BodyText"]))
+    Forest cover (2000): {data['forest_cover']}<br/>
+    Deforestation detected after 2020: {data['post_2020_deforestation']}<br/>
+    Risk: {data['risk']}<br/>
+    Score: {data['score']}<br/><br/>
 
-    doc.build(story)
+    Regulation: EU 2023/1115 (EUDR)
+    """
 
-    return pdf_path
+    content.append(
+        Paragraph(text, styles["Normal"])
+    )
+
+    doc.build(content)
+
+    return file_path
