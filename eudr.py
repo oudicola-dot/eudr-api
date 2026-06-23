@@ -37,7 +37,6 @@ def init_db():
 def compute_risk(lat: float, lon: float):
     """Appelle GFW API ou fallback simulation"""
     
-    # Fallback simulation
     def fallback():
         seed = abs(int((lat * 1000) + (lon * 1000)))
         risk = seed % 100
@@ -61,7 +60,6 @@ def compute_risk(lat: float, lon: float):
         tree_cover = data.get("treeCover", 0)
         loss_year = data.get("lossYear", 0)
         
-        # Règle EUDR
         if tree_cover > 30 and loss_year > 2020:
             risk_score = 85
             risk_level = "HIGH"
