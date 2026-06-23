@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+earthengine-api
+reportlab
+pydantic
+google-auth
