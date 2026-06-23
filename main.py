@@ -1,14 +1,16 @@
 import os
 import pathlib
+import hashlib
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from eudr import init_db, create_audit, get_audit
 from pdf_report import generate_eudr_pdf
 
-app = FastAPI(title="EUDR SaaS - Clean Flow", version="2.0")
+app = FastAPI(title="EUDR Enterprise Registry", version="2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,7 +23,6 @@ app.add_middleware(
 API_KEY = os.getenv("API_KEY", "CHANGE_ME")
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
-# INIT DB
 init_db()
 
 
@@ -31,11 +32,11 @@ init_db()
 def root():
     return {
         "status": "online",
-        "service": "EUDR SaaS Clean Flow"
+        "service": "EUDR Enterprise Registry"
     }
 
 
-# ---------------- CORE FLOW (SINGLE ENTRY) ----------------
+# ---------------- CREATE AUDIT ----------------
 
 @app.post("/eudr-check")
 def eudr_check(payload: dict):
@@ -43,47 +44,99 @@ def eudr_check(payload: dict):
     if payload.get("api_key") != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    name = payload.get("name")
-    lat = float(payload.get("lat"))
-    lon = float(payload.get("lon"))
-
-    # 1. CREATE AUDIT (DB)
-    audit = create_audit(name, lat, lon)
+    audit = create_audit(
+        payload.get("name"),
+        float(payload.get("lat")),
+        float(payload.get("lon"))
+    )
 
     audit_id = audit["audit_id"]
 
-    # 2. GENERATE PDF DIRECTLY (IMPORTANT FIX)
-    file_path = generate_eudr_pdf(
+    # SHA256 enterprise fingerprint
+    sha = hashlib.sha256(
+        f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
+    ).hexdigest()
+
+    audit["sha256"] = sha
+
+    audit["verify_url"] = f"{BASE_URL}/audit/{audit_id}"
+    audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}"
+
+    # PDF généré immédiatement
+    generate_eudr_pdf(
         audit_id=audit_id,
         name=audit["farm_name"],
         lat=audit["latitude"],
         lon=audit["longitude"],
         risk_score=audit["risk_score"],
-        risk_level=audit["risk_level"]
+        risk_level=audit["risk_level"],
+        sha256=sha,
+        verify_url=audit["verify_url"]
     )
 
-    # 3. VERIFY + PDF LINKS
-    verify_url = f"{BASE_URL}/eudr/verify/{audit_id}"
-    pdf_url = f"{BASE_URL}/download/{audit_id}"
-
-    return {
-        **audit,
-        "verify_url": verify_url,
-        "pdf_url": pdf_url
-    }
+    return audit
 
 
-# ---------------- VERIFY ----------------
+# ---------------- PUBLIC AUDIT PAGE ----------------
 
-@app.get("/eudr/verify/{audit_id}")
-def verify(audit_id: str):
+@app.get("/audit/{audit_id}", response_class=HTMLResponse)
+def audit_page(audit_id: str):
 
     audit = get_audit(audit_id)
 
     if not audit:
-        raise HTTPException(status_code=404, detail="Audit not found")
+        return HTMLResponse("<h1>Audit not found</h1>", status_code=404)
 
-    return audit
+    sha = hashlib.sha256(
+        f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
+    ).hexdigest()
+
+    html = f"""
+    <html>
+    <head>
+        <title>EUDR Audit {audit_id}</title>
+        <style>
+            body {{
+                font-family: Arial;
+                background:#0b1220;
+                color:white;
+                padding:40px;
+            }}
+            .box {{
+                background:#111a2e;
+                padding:20px;
+                border-radius:12px;
+                max-width:600px;
+            }}
+            .ok {{ color:#00ff99; }}
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>🌿 EUDR Enterprise Audit</h2>
+
+            <p><b>ID:</b> {audit_id}</p>
+            <p><b>Farm:</b> {audit['farm_name']}</p>
+            <p><b>Lat:</b> {audit['latitude']}</p>
+            <p><b>Lon:</b> {audit['longitude']}</p>
+
+            <p><b>Risk:</b> {audit['risk_level']} ({audit['risk_score']})</p>
+
+            <p class="ok"><b>Status:</b> VERIFIED RECORD (PRELIMINARY)</p>
+
+            <hr>
+
+            <p><b>SHA256:</b><br>{sha}</p>
+
+            <p><a href="/download/{audit_id}" style="color:#00ff99">
+                Download PDF
+            </a></p>
+        </div>
+    </body>
+    </html>
+    """
+
+    return HTMLResponse(html)
 
 
 # ---------------- DOWNLOAD PDF ----------------
