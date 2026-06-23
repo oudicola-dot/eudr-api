@@ -30,7 +30,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_com
     styles = getSampleStyleSheet()
     content = []
     
-    # Couverture
     content.append(Spacer(1, 40))
     content.append(Paragraph("<b>TIERRAS DE MONTAÑA</b>", styles["Title"]))
     content.append(Paragraph("EUDR TRACEABILITY REPORT", styles["Heading2"]))
@@ -48,7 +47,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_com
     content.append(Paragraph(f"<b>EUDR Status:</b> {eudr_compliant}", styles["Normal"]))
     content.append(PageBreak())
     
-    # QR Code
     signature = sign_audit(audit_id)
     verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
     
@@ -56,10 +54,8 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_com
     qr_path = f"/tmp/{audit_id}_qr.png"
     qr.save(qr_path)
     
-    # SHA256
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     
-    # Contenu
     content.append(Paragraph("EXECUTIVE SUMMARY", styles["Heading1"]))
     content.append(Spacer(1, 10))
     content.append(Paragraph(f"<b>Farm:</b> {name}", styles["Normal"]))
@@ -69,7 +65,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_com
     content.append(Paragraph(f"<b>Loss Year:</b> {loss_year if loss_year > 0 else 'N/A'}", styles["Normal"]))
     content.append(Spacer(1, 20))
     
-    # Tableau
     table = Table([
         ["Risk Score", risk_score],
         ["Risk Level", risk_level],
@@ -85,7 +80,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_com
     content.append(table)
     content.append(Spacer(1, 25))
     
-    # QR
     content.append(Paragraph("VERIFY CERTIFICATE", styles["Heading1"]))
     content.append(Spacer(1, 10))
     try:
