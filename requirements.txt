@@ -4,3 +4,4 @@ reportlab
 qrcode
 pillow
 requests
+earthengine-api
