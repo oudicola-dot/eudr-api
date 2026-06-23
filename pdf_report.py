@@ -50,7 +50,7 @@ def get_logo():
 
 
 # ----------------------------
-# PDF GENERATOR (PRODUCTION V1)
+# PDF GENERATOR (CLEAN V1)
 # ----------------------------
 
 def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
@@ -61,7 +61,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
     styles = getSampleStyleSheet()
     content = []
 
-    # ---------------- COVER PAGE ----------------
+    # ---------------- COVER ----------------
     content.append(Spacer(1, 40))
 
     content.append(Paragraph(
@@ -70,13 +70,13 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
     ))
 
     content.append(Paragraph(
-        "EUDR TRACEABILITY CERTIFICATE",
+        "EUDR TRACEABILITY REPORT",
         styles["Heading2"]
     ))
 
     content.append(Spacer(1, 20))
 
-    # LOGO
+    # LOGO SAFE
     logo = get_logo()
     if logo:
         try:
@@ -120,7 +120,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
 
     content.append(Spacer(1, 20))
 
-    # ---------------- RISK TABLE ----------------
+    # ---------------- TABLE ----------------
     table = Table([
         ["Risk Score", risk_score],
         ["Risk Level", risk_level],
@@ -166,7 +166,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
     # ---------------- BUILD ----------------
     doc.build(content)
 
-    # cleanup QR
+    # cleanup
     try:
         os.remove(qr_path)
     except:
