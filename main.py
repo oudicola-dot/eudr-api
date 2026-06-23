@@ -1,215 +1,141 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import tempfile
 import os
-import ee
+import uuid
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from pdf_report import generate_eudr_pdf
 
-# ==========================
-# CONFIG
-# ==========================
+app = FastAPI(title="EUDR API SaaS", version="1.0")
 
-API_KEY = os.getenv("API_KEY", "EUDR-SECRET-123")
-
-EE_PROJECT = os.getenv(
-    "EE_PROJECT",
-    "superb-gear-473018-k1"
-)
-
-EUDR_CUTOFF_YEAR = 2020
-FOREST_THRESHOLD = 30
-
-# ==========================
-# EARTH ENGINE
-# ==========================
-
-try:
-    ee.Initialize(project=EE_PROJECT)
-    print("EARTH ENGINE OK")
-
-except Exception as e:
-    print("EE INIT ERROR:", e)
-
-# ==========================
-# API
-# ==========================
-
-app = FastAPI(
-    title="EUDR Platform",
-    version="1.0"
-)
+# ---------------- CORS ----------------
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
-# ==========================
-# REQUEST
-# ==========================
+API_KEY = os.getenv("API_KEY", "EUDR-SECRET-123")
 
-class RequestData(BaseModel):
-    api_key: str
-    name: str
-    lat: float
-    lon: float
+# ---------------- MEMORY DB (V1 SIMPLE) ----------------
 
-# ==========================
-# ANALYSE
-# ==========================
+AUDITS = {}
 
-def calculate_eudr(data):
-
-    point = ee.Geometry.Point(
-        [data.lon, data.lat]
-    )
-
-    buffer = point.buffer(1000)
-
-    forest = (
-        ee.Image(
-            "UMD/hansen/global_forest_change_2024_v1_12"
-        )
-        .select("treecover2000")
-    )
-
-    cover = (
-        forest
-        .reduceRegion(
-            reducer=ee.Reducer.mean(),
-            geometry=buffer,
-            scale=30
-        )
-        .get("treecover2000")
-        .getInfo()
-    )
-
-    if cover is None:
-        cover = 0
-
-    risk = round(max(
-        0,
-        (FOREST_THRESHOLD-cover)/100
-    ),3)
-
-    compliant = risk < 0.05
-
-    return {
-
-        "document":
-        "EUDR Due Diligence Statement",
-
-        "farm":
-        data.name,
-
-        "coordinates": {
-            "lat": data.lat,
-            "lon": data.lon
-        },
-
-        "forest_cover":
-        round(cover,2),
-
-        "cutoff_year":
-        EUDR_CUTOFF_YEAR,
-
-        "risk_score":
-        risk,
-
-        "status":
-        "COMPLIANT"
-        if compliant
-        else "NON_COMPLIANT",
-
-        "method":
-        "Google Earth Engine + Hansen"
-    }
-
-# ==========================
-# CHECK
-# ==========================
-
-@app.post("/eudr-check")
-def eudr_check(data: RequestData):
-
-    if data.api_key != API_KEY:
-
-        raise HTTPException(
-            401,
-            "INVALID API KEY"
-        )
-
-    try:
-
-        result = calculate_eudr(data)
-
-        return result
-
-    except Exception as e:
-
-        raise HTTPException(
-            500,
-            str(e)
-        )
-
-# ==========================
-# PDF
-# ==========================
-
-@app.post("/eudr-pdf")
-def eudr_pdf(data: RequestData):
-
-    if data.api_key != API_KEY:
-
-        raise HTTPException(
-            401,
-            "INVALID API KEY"
-        )
-
-    try:
-
-        result = calculate_eudr(data)
-
-        filename = os.path.join(
-            tempfile.gettempdir(),
-            f"EUDR_{data.name}.pdf"
-        )
-
-        generate_eudr_pdf(
-            result,
-            filename
-        )
-
-        return FileResponse(
-            filename,
-            media_type="application/pdf",
-            filename=f"EUDR_{data.name}.pdf"
-        )
-
-    except Exception as e:
-
-        raise HTTPException(
-            500,
-            str(e)
-        )
-
-# ==========================
-# ROOT
-# ==========================
+# ---------------- ROOT ----------------
 
 @app.get("/")
-def home():
+def root():
+    return {
+        "status": "online",
+        "service": "EUDR SaaS API"
+    }
+
+
+# ---------------- RISK ENGINE (V1 SIMPLE) ----------------
+
+def compute_risk(lat: float, lon: float):
+
+    seed = abs(int((lat * 1000) + (lon * 1000)))
+    risk = seed % 100
+
+    if risk < 30:
+        level = "LOW"
+    elif risk < 70:
+        level = "MEDIUM"
+    else:
+        level = "HIGH"
+
+    return risk, level
+
+
+# ---------------- CHECK ----------------
+
+@app.post("/eudr-check")
+def eudr_check(payload: dict):
+
+    if payload.get("api_key") != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    audit_id = str(uuid.uuid4())
+
+    name = payload.get("name")
+    lat = float(payload.get("lat"))
+    lon = float(payload.get("lon"))
+
+    risk_score, risk_level = compute_risk(lat, lon)
+
+    AUDITS[audit_id] = {
+        "audit_id": audit_id,
+        "farm_name": name,
+        "lat": lat,
+        "lon": lon,
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "status": "PRELIMINARY RECORD"
+    }
+
+    return AUDITS[audit_id]
+
+
+# ---------------- PDF ----------------
+
+@app.post("/eudr-pdf")
+def eudr_pdf(payload: dict):
+
+    if payload.get("api_key") != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    audit_id = payload.get("audit_id")
+
+    if audit_id not in AUDITS:
+        raise HTTPException(status_code=404, detail="Audit not found")
+
+    data = AUDITS[audit_id]
+
+    file_path = generate_eudr_pdf(
+        audit_id=audit_id,
+        name=data["farm_name"],
+        lat=data["lat"],
+        lon=data["lon"],
+        risk_level=data["risk_level"]
+    )
 
     return {
-        "platform":
-        "EUDR API ONLINE",
+        "audit_id": audit_id,
+        "pdf_url": f"https://eudr-api-mi0x.onrender.com/download/{audit_id}"
+    }
 
-        "status":
-        "RUNNING"
+
+# ---------------- DOWNLOAD ----------------
+
+@app.get("/download/{audit_id}")
+def download(audit_id: str):
+
+    file_path = f"/tmp/{audit_id}.pdf"
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        filename=f"EUDR_{audit_id}.pdf"
+    )
+
+
+# ---------------- VERIFY ----------------
+
+@app.get("/eudr/verify/{audit_id}")
+def verify(audit_id: str):
+
+    if audit_id not in AUDITS:
+        raise HTTPException(status_code=404, detail="Audit not found")
+
+    return {
+        **AUDITS[audit_id],
+        "legal_notice": "PRELIMINARY TECHNICAL RECORD - NOT EUDR CERTIFICATION"
     }
