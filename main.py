@@ -1,113 +1,215 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import ee
+import tempfile
 import os
+import ee
 
 from pdf_report import generate_eudr_pdf
 
-app = FastAPI()
-
-# =====================
+# ==========================
 # CONFIG
-# =====================
+# ==========================
 
 API_KEY = os.getenv("API_KEY", "EUDR-SECRET-123")
-EE_PROJECT = os.getenv("EE_PROJECT", None)
 
-# =====================
-# EARTH ENGINE INIT SAFE
-# =====================
+EE_PROJECT = os.getenv(
+    "EE_PROJECT",
+    "superb-gear-473018-k1"
+)
+
+EUDR_CUTOFF_YEAR = 2020
+FOREST_THRESHOLD = 30
+
+# ==========================
+# EARTH ENGINE
+# ==========================
 
 try:
-    if EE_PROJECT:
-        ee.Initialize(project=EE_PROJECT)
-    else:
-        ee.Initialize()
+    ee.Initialize(project=EE_PROJECT)
+    print("EARTH ENGINE OK")
+
 except Exception as e:
     print("EE INIT ERROR:", e)
 
-# =====================
-# INPUT MODEL
-# =====================
+# ==========================
+# API
+# ==========================
 
-class Request(BaseModel):
+app = FastAPI(
+    title="EUDR Platform",
+    version="1.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+# ==========================
+# REQUEST
+# ==========================
+
+class RequestData(BaseModel):
     api_key: str
     name: str
     lat: float
     lon: float
 
-# =====================
-# SIMPLE SAT ANALYSIS
-# =====================
+# ==========================
+# ANALYSE
+# ==========================
 
-def compute_risk(lat, lon):
+def calculate_eudr(data):
 
-    point = ee.Geometry.Point([lon, lat])
+    point = ee.Geometry.Point(
+        [data.lon, data.lat]
+    )
 
-    image = ee.Image("UMD/hansen/global_forest_change_2025_v1_13")
+    buffer = point.buffer(1000)
 
-    forest = image.select("treecover2000").reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=point,
-        scale=30
-    ).get("treecover2000")
+    forest = (
+        ee.Image(
+            "UMD/hansen/global_forest_change_2024_v1_12"
+        )
+        .select("treecover2000")
+    )
 
-    loss = image.select("loss").reduceRegion(
-        reducer=ee.Reducer.sum(),
-        geometry=point,
-        scale=30
-    ).get("loss")
+    cover = (
+        forest
+        .reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=buffer,
+            scale=30
+        )
+        .get("treecover2000")
+        .getInfo()
+    )
 
-    forest_val = forest.getInfo() if forest else 0
-    loss_val = loss.getInfo() if loss else 0
+    if cover is None:
+        cover = 0
 
-    risk = "COMPLIANT" if loss_val == 0 else "NON_COMPLIANT"
+    risk = round(max(
+        0,
+        (FOREST_THRESHOLD-cover)/100
+    ),3)
+
+    compliant = risk < 0.05
 
     return {
-        "forest_cover": forest_val,
-        "post_2020_deforestation": loss_val,
-        "risk": risk,
-        "score": float(loss_val or 0)
+
+        "document":
+        "EUDR Due Diligence Statement",
+
+        "farm":
+        data.name,
+
+        "coordinates": {
+            "lat": data.lat,
+            "lon": data.lon
+        },
+
+        "forest_cover":
+        round(cover,2),
+
+        "cutoff_year":
+        EUDR_CUTOFF_YEAR,
+
+        "risk_score":
+        risk,
+
+        "status":
+        "COMPLIANT"
+        if compliant
+        else "NON_COMPLIANT",
+
+        "method":
+        "Google Earth Engine + Hansen"
     }
 
-# =====================
-# API CHECK
-# =====================
+# ==========================
+# CHECK
+# ==========================
 
 @app.post("/eudr-check")
-def eudr_check(req: Request):
+def eudr_check(data: RequestData):
 
-    if req.api_key != API_KEY:
-        return {"error": "unauthorized"}
+    if data.api_key != API_KEY:
 
-    result = compute_risk(req.lat, req.lon)
+        raise HTTPException(
+            401,
+            "INVALID API KEY"
+        )
 
-    return {
-        "name": req.name,
-        "lat": req.lat,
-        "lon": req.lon,
-        **result
-    }
+    try:
 
-# =====================
-# PDF ENDPOINT
-# =====================
+        result = calculate_eudr(data)
+
+        return result
+
+    except Exception as e:
+
+        raise HTTPException(
+            500,
+            str(e)
+        )
+
+# ==========================
+# PDF
+# ==========================
 
 @app.post("/eudr-pdf")
-def eudr_pdf(req: Request):
+def eudr_pdf(data: RequestData):
 
-    if req.api_key != API_KEY:
-        return {"error": "unauthorized"}
+    if data.api_key != API_KEY:
 
-    result = compute_risk(req.lat, req.lon)
+        raise HTTPException(
+            401,
+            "INVALID API KEY"
+        )
 
-    data = {
-        "name": req.name,
-        "lat": req.lat,
-        "lon": req.lon,
-        **result
+    try:
+
+        result = calculate_eudr(data)
+
+        filename = os.path.join(
+            tempfile.gettempdir(),
+            f"EUDR_{data.name}.pdf"
+        )
+
+        generate_eudr_pdf(
+            result,
+            filename
+        )
+
+        return FileResponse(
+            filename,
+            media_type="application/pdf",
+            filename=f"EUDR_{data.name}.pdf"
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            500,
+            str(e)
+        )
+
+# ==========================
+# ROOT
+# ==========================
+
+@app.get("/")
+def home():
+
+    return {
+        "platform":
+        "EUDR API ONLINE",
+
+        "status":
+        "RUNNING"
     }
-
-    file_path = generate_eudr_pdf(data)
-
-    return {"pdf_url": file_path}
