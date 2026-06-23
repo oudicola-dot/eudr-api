@@ -9,7 +9,8 @@ from reportlab.platypus import (
     Spacer,
     Image,
     Table,
-    TableStyle
+    TableStyle,
+    PageBreak
 )
 
 from reportlab.lib.styles import getSampleStyleSheet
@@ -18,12 +19,14 @@ from reportlab.lib import colors
 
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
-# 🔥 LOGO TIERRAS DE MONTAÑA
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
 
 
-def download_logo():
-    """Télécharge le logo en local (Render-safe)"""
+# ----------------------------
+# LOGO DOWNLOAD (CACHE SAFE)
+# ----------------------------
+
+def get_logo():
     path = "/tmp/tdm_logo.png"
 
     if not os.path.exists(path):
@@ -34,14 +37,11 @@ def download_logo():
     return path
 
 
-def generate_eudr_pdf(
-    audit_id,
-    name,
-    lat,
-    lon,
-    risk_score,
-    risk_level
-):
+# ----------------------------
+# PDF GENERATOR PREMIUM
+# ----------------------------
+
+def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
 
     file_path = f"/tmp/{audit_id}.pdf"
     doc = SimpleDocTemplate(file_path)
@@ -49,27 +49,41 @@ def generate_eudr_pdf(
     styles = getSampleStyleSheet()
     content = []
 
-    # ---------------- TITLE ----------------
+    # ---------------- COVER PAGE ----------------
+    content.append(Spacer(1, 40))
+
     content.append(Paragraph(
         "<b>TIERRAS DE MONTAÑA</b>",
         styles["Title"]
     ))
 
     content.append(Paragraph(
-        "EUDR TRACEABILITY & COMPLIANCE REPORT",
+        "EUDR TRACEABILITY CERTIFICATE",
         styles["Heading2"]
     ))
 
-    content.append(Spacer(1, 15))
+    content.append(Spacer(1, 20))
 
-    # ---------------- LOGO ----------------
+    # LOGO CENTERED STYLE
     try:
-        logo_path = download_logo()
-        logo = Image(logo_path, width=140, height=70)
+        logo = Image(get_logo(), width=160, height=80)
         content.append(logo)
-        content.append(Spacer(1, 20))
     except:
         pass
+
+    content.append(Spacer(1, 30))
+
+    content.append(Paragraph(
+        f"<b>Audit ID:</b> {audit_id}",
+        styles["Normal"]
+    ))
+
+    content.append(Paragraph(
+        "Status: PRELIMINARY COMPLIANCE REPORT",
+        styles["Normal"]
+    ))
+
+    content.append(PageBreak())
 
     # ---------------- QR ----------------
     verify_url = f"{BASE_URL}/eudr/verify/{audit_id}"
@@ -78,54 +92,64 @@ def generate_eudr_pdf(
     qr_path = f"/tmp/{audit_id}_qr.png"
     qr.save(qr_path)
 
-    content.append(Image(qr_path, width=140, height=140))
-    content.append(Spacer(1, 15))
-
-    # ---------------- SECURITY HASH ----------------
+    # ---------------- HASH ----------------
     sha = hashlib.sha256(
         f"{audit_id}{name}{lat}{lon}".encode()
     ).hexdigest()
 
-    # ---------------- TABLE ----------------
-    table_data = [
-        ["Field", "Value"],
-        ["Audit ID", audit_id],
-        ["Farm", name],
-        ["Latitude", str(lat)],
-        ["Longitude", str(lon)],
-        ["Risk Score", str(risk_score)],
-        ["Risk Level", risk_level],
-        ["Status", "PRELIMINARY COMPLIANCE"],
-    ]
+    # ---------------- SECTION 1 ----------------
+    content.append(Paragraph("EXECUTIVE SUMMARY", styles["Heading1"]))
+    content.append(Spacer(1, 10))
 
-    table = Table(table_data)
-
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-
-        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#111827")),
-        ("TEXTCOLOR", (0, 1), (-1, -1), colors.white),
-
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("PADDING", (0, 0), (-1, -1), 6),
-    ]))
-
-    content.append(table)
-    content.append(Spacer(1, 20))
-
-    # ---------------- FOOTER ----------------
     content.append(Paragraph(
-        f"<b>SHA256:</b> {sha}",
+        f"Farm: <b>{name}</b>",
         styles["Normal"]
     ))
 
-    content.append(Spacer(1, 8))
+    content.append(Paragraph(
+        f"Location: {lat}, {lon}",
+        styles["Normal"]
+    ))
+
+    content.append(Spacer(1, 20))
+
+    # ---------------- RISK TABLE ----------------
+    table = Table([
+        ["Risk Score", risk_score],
+        ["Risk Level", risk_level],
+        ["Issuer", "Tierras de Montaña"],
+        ["Status", "PRELIMINARY COMPLIANCE"]
+    ])
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#1f2937")),
+    ]))
+
+    content.append(table)
+
+    content.append(Spacer(1, 25))
+
+    # ---------------- QR SECTION ----------------
+    content.append(Paragraph("VERIFY CERTIFICATE", styles["Heading1"]))
+    content.append(Spacer(1, 10))
+
+    content.append(Image(qr_path, width=140, height=140))
+
+    content.append(Spacer(1, 10))
 
     content.append(Paragraph(
-        f"<b>Verify:</b> {verify_url}",
+        f"Verification URL: {verify_url}",
+        styles["Normal"]
+    ))
+
+    content.append(Spacer(1, 15))
+
+    # ---------------- SECURITY FOOTER ----------------
+    content.append(Paragraph(
+        f"<b>SHA256:</b> {sha}",
         styles["Normal"]
     ))
 
