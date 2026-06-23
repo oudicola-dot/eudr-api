@@ -34,32 +34,29 @@ def init_db():
     conn.commit()
     conn.close()
 
-def compute_risk(lat, lon):
+def compute_risk(lat: float, lon: float):
 
+    print("################################")
     print("COMPUTE_RISK EXECUTED")
+    print("################################")
+
+    def fallback():
+        return {
+            "risk_score": 50,
+            "risk_level": "MEDIUM",
+            "eudr_compliant": "COMPLIANT",
+            "tree_cover": 0,
+            "loss_year": 0,
+            "source": "fallback"
+        }
+
+    print("========== GFW DEBUG ==========")
+    print("GFW_API_KEY =", GFW_API_KEY)
 
     if not GFW_API_KEY:
-        print("NO API KEY")
+        print("NO GFW API KEY FOUND")
         return fallback()
 
-    try:
-
-        response = requests.get(
-            "https://data-api.globalforestwatch.org",
-            headers={
-                "x-api-key": GFW_API_KEY
-            },
-            timeout=10
-        )
-
-        print("STATUS:", response.status_code)
-        print("TEXT:", response.text[:1000])
-
-    except Exception as e:
-
-        print("ERROR:", e)
-
-    return fallback()
     try:
 
         print("LAT:", lat)
