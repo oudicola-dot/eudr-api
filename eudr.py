@@ -71,34 +71,6 @@ def compute_risk(lat: float, lon: float):
     print("========== END DEBUG ==========")
 
     return fallback()
-        
-        tree_cover = data.get("treeCover", 0)
-        loss_year = data.get("lossYear", 0)
-        
-        if tree_cover > 30 and loss_year > 2020:
-            risk_score = 85
-            risk_level = "HIGH"
-            compliant = "NON COMPLIANT"
-        elif tree_cover > 30 and loss_year <= 2020:
-            risk_score = 50
-            risk_level = "MEDIUM"
-            compliant = "COMPLIANT"
-        else:
-            risk_score = 15
-            risk_level = "LOW"
-            compliant = "COMPLIANT"
-        
-        return {
-            "risk_score": risk_score,
-            "risk_level": risk_level,
-            "eudr_compliant": compliant,
-            "tree_cover": tree_cover,
-            "loss_year": loss_year,
-            "source": "gfw"
-        }
-    except Exception as e:
-        print(f"GFW API error: {e}")
-        return fallback()
 
 def create_audit(name: str, lat: float, lon: float):
     audit_id = str(uuid.uuid4())
