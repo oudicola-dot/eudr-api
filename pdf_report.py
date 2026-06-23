@@ -1,43 +1,60 @@
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
+import qrcode
 import uuid
+import os
 
-def generate_eudr_pdf(data):
 
-    file_name = f"EUDR_CERT_{uuid.uuid4().hex[:8]}.pdf"
-    file_path = f"./{file_name}"
+def generate_eudr_pdf(audit_id, name, lat, lon, risk):
 
-    doc = SimpleDocTemplate(file_path)
+    filename = f"/tmp/{audit_id}.pdf"
+    qr_path = f"/tmp/{audit_id}_qr.png"
+
+    doc = SimpleDocTemplate(filename)
     styles = getSampleStyleSheet()
 
-    content = []
-
-    content.append(
-        Paragraph(
-            "EUDR DUE DILIGENCE STATEMENT",
-            styles["Title"]
-        )
-    )
-
-    content.append(Spacer(1,12))
-
-    text = f"""
-    Farm: {data['name']}<br/>
-    Latitude: {data['lat']}<br/>
-    Longitude: {data['lon']}<br/><br/>
-
-    Forest cover (2000): {data['forest_cover']}<br/>
-    Deforestation detected after 2020: {data['post_2020_deforestation']}<br/>
-    Risk: {data['risk']}<br/>
-    Score: {data['score']}<br/><br/>
-
-    Regulation: EU 2023/1115 (EUDR)
+    # --------------------
+    # QR CODE CONTENT
+    # --------------------
+    qr_data = f"""
+    EUDR AUDIT
+    ID: {audit_id}
+    FARM: {name}
+    LAT: {lat}
+    LON: {lon}
+    RISK: {risk}
     """
 
-    content.append(
-        Paragraph(text, styles["Normal"])
-    )
+    qr = qrcode.make(qr_data)
+    qr.save(qr_path)
+
+    # --------------------
+    # PDF CONTENT
+    # --------------------
+    content = []
+
+    content.append(Paragraph("EUDR Due Diligence Statement", styles["Title"]))
+    content.append(Spacer(1, 12))
+
+    content.append(Paragraph(f"Audit ID: {audit_id}", styles["Normal"]))
+    content.append(Paragraph(f"Farm: {name}", styles["Normal"]))
+    content.append(Paragraph(f"Latitude: {lat}", styles["Normal"]))
+    content.append(Paragraph(f"Longitude: {lon}", styles["Normal"]))
+    content.append(Paragraph(f"Risk Level: {risk}", styles["Normal"]))
+    content.append(Spacer(1, 20))
+
+    # --------------------
+    # QR IMAGE INTO PDF
+    # --------------------
+    content.append(Image(qr_path, width=120, height=120))
+
+    content.append(Spacer(1, 20))
+
+    content.append(Paragraph(
+        "This document is an EUDR preliminary due diligence report.",
+        styles["Normal"]
+    ))
 
     doc.build(content)
 
-    return file_path
+    return filename
