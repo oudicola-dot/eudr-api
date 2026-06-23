@@ -18,7 +18,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.getenv("API_KEY", "CHANGE_ME")
+API_KEY = os.getenv("API_KEY")
+
+if not API_KEY:
+    raise RuntimeError("API_KEY environment variable missing")
+
+@app.get("/debug")
+def debug():
+    return {
+        "api_key_present": bool(API_KEY),
+        "api_key_length": len(API_KEY) if API_KEY else 0,
+        "api_key_first": API_KEY[:4] if API_KEY else "",
+        "api_key_last": API_KEY[-4:] if API_KEY else ""
+    }
+
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
 init_db()
