@@ -4,4 +4,3 @@ earthengine-api
 reportlab
 qrcode
 pillow
-EOF
