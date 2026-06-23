@@ -74,6 +74,10 @@ def verify_audit(audit_id: str, signature: str):
         f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
     ).hexdigest()
     
+    # ✅ Ajout de Data Source dans la page de vérification
+    source = audit.get("source", "unknown")
+    source_label = "🌍 Earth Engine" if source == "ee" else "🛰️ GFW" if source == "gfw" else "⚠️ Simulation"
+    
     return HTMLResponse(f"""
     <html>
     <body style="font-family:Arial;background:#0b1220;color:white;padding:40px;">
@@ -88,6 +92,7 @@ def verify_audit(audit_id: str, signature: str):
             <p><b>Loss Year:</b> {audit.get('loss_year', 'N/A')}</p>
             <p><b>Risk:</b> {audit['risk_level']} ({audit['risk_score']})</p>
             <p><b>EUDR Status:</b> {audit['eudr_compliant']}</p>
+            <p><b>Data Source:</b> {source_label}</p>
             <hr>
             <p><b>SHA256:</b><br>{sha}</p>
             <a href="/download/{audit_id}?signature={signature}" style="color:#00ff99;">
@@ -123,6 +128,7 @@ def download_pdf(audit_id: str, signature: str):
 
     try:
 
+        # ✅ AJOUT DU PARAMÈTRE source
         file_path = generate_eudr_pdf(
             audit_id=audit["audit_id"],
             name=audit["farm_name"],
@@ -132,7 +138,8 @@ def download_pdf(audit_id: str, signature: str):
             risk_level=audit["risk_level"],
             eudr_compliant=audit["eudr_compliant"],
             tree_cover=audit.get("tree_cover", 0),
-            loss_year=audit.get("loss_year", 0)
+            loss_year=audit.get("loss_year", 0),
+            source=audit.get("source", "unknown")
         )
 
         print("PDF GENERATED:", file_path)
@@ -151,6 +158,7 @@ def download_pdf(audit_id: str, signature: str):
             status_code=500,
             detail=str(e)
         )
+
 @app.get("/audit/{audit_id}", response_class=HTMLResponse)
 def audit_page(audit_id: str):
     audit = get_audit(audit_id)
@@ -162,6 +170,10 @@ def audit_page(audit_id: str):
     ).hexdigest()
     
     signature = audit["signature"]
+    
+    # ✅ Ajout de Data Source dans la page d'audit
+    source = audit.get("source", "unknown")
+    source_label = "🌍 Earth Engine" if source == "ee" else "🛰️ GFW" if source == "gfw" else "⚠️ Simulation"
     
     return HTMLResponse(f"""
     <html>
@@ -176,6 +188,7 @@ def audit_page(audit_id: str):
             <p><b>Loss Year:</b> {audit.get('loss_year', 'N/A')}</p>
             <p><b>Risk:</b> {audit['risk_level']} ({audit['risk_score']})</p>
             <p><b>EUDR Status:</b> {audit['eudr_compliant']}</p>
+            <p><b>Data Source:</b> {source_label}</p>
             <p style="color:#00ff99;"><b>Status:</b> PRELIMINARY RECORD</p>
             <hr>
             <p><b>SHA256:</b><br>{sha}</p>
