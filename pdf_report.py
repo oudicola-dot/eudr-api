@@ -1,91 +1,84 @@
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.utils import ImageReader
-from reportlab.lib import colors
-import qrcode
-import hashlib
-import uuid
 import os
+import hashlib
+import qrcode
+
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Image
+)
+
+from reportlab.lib.styles import getSampleStyleSheet
 
 
-TDM_LOGO = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
-EU_FLAG = "https://upload.wikimedia.org/wikipedia/commons/b/b7/Flag_of_Europe.svg"
+def generate_eudr_pdf(audit_id, name, lat, lon, risk_level):
 
-
-def sha256(text: str):
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-def generate_eudr_pdf(audit_id, name, lat, lon, risk):
-
-    filename = f"/tmp/{audit_id}.pdf"
+    file_path = f"/tmp/{audit_id}.pdf"
     qr_path = f"/tmp/{audit_id}_qr.png"
 
-    # -------------------------
-    # PUBLIC VERIFICATION URL
-    # -------------------------
+    doc = SimpleDocTemplate(file_path)
+    styles = getSampleStyleSheet()
+
+    # ---------------- VERIFY URL ----------------
+
     verify_url = f"https://eudr-api-mi0x.onrender.com/eudr/verify/{audit_id}"
 
-    # -------------------------
-    # QR CODE
-    # -------------------------
+    # ---------------- QR ----------------
+
     qr = qrcode.make(verify_url)
     qr.save(qr_path)
 
-    # -------------------------
-    # HASH (LEGAL INTEGRITY)
-    # -------------------------
-    raw = f"{audit_id}{name}{lat}{lon}{risk}"
-    pdf_hash = sha256(raw)
+    # ---------------- HASH ----------------
 
-    doc = SimpleDocTemplate(filename)
-    styles = getSampleStyleSheet()
+    sha = hashlib.sha256(
+        f"{audit_id}{name}{lat}{lon}".encode()
+    ).hexdigest()
+
+    # ---------------- PDF ----------------
 
     content = []
 
-    # -------------------------
-    # HEADER (LOGOS)
-    # -------------------------
-    content.append(Paragraph("🌿 EUDR Due Diligence Statement", styles["Title"]))
-    content.append(Spacer(1, 10))
+    content.append(Paragraph(
+        "EUDR PRELIMINARY ASSESSMENT REPORT",
+        styles["Title"]
+    ))
+
+    content.append(Spacer(1, 12))
 
     content.append(Paragraph(f"<b>Audit ID:</b> {audit_id}", styles["Normal"]))
     content.append(Paragraph(f"<b>Farm:</b> {name}", styles["Normal"]))
-    content.append(Paragraph(f"<b>Location:</b> {lat}, {lon}", styles["Normal"]))
-    content.append(Paragraph(f"<b>Risk Level:</b> {risk}", styles["Normal"]))
+    content.append(Paragraph(f"<b>Latitude:</b> {lat}", styles["Normal"]))
+    content.append(Paragraph(f"<b>Longitude:</b> {lon}", styles["Normal"]))
+    content.append(Paragraph(f"<b>Risk Level:</b> {risk_level}", styles["Normal"]))
+
+    content.append(Spacer(1, 12))
+
+    content.append(Paragraph(f"<b>SHA256:</b> {sha}", styles["Normal"]))
+
+    content.append(Spacer(1, 20))
+
+    content.append(Image(qr_path, width=160, height=160))
 
     content.append(Spacer(1, 10))
 
-    # -------------------------
-    # LEGAL NOTICE
-    # -------------------------
     content.append(Paragraph(
-        "This document represents a preliminary EUDR due diligence statement and does not constitute final EU regulatory approval.",
+        f"Verification URL: {verify_url}",
         styles["Normal"]
     ))
 
-    content.append(Spacer(1, 10))
+    content.append(Spacer(1, 20))
 
-    # -------------------------
-    # QR CODE
-    # -------------------------
-    content.append(Image(qr_path, width=120, height=120))
-
-    content.append(Spacer(1, 10))
-
-    # -------------------------
-    # SHA HASH
-    # -------------------------
-    content.append(Paragraph(f"<b>Document Hash (SHA256):</b>", styles["Normal"]))
-    content.append(Paragraph(pdf_hash, styles["Code"]))
-
-    content.append(Spacer(1, 15))
-
-    # -------------------------
-    # FOOTER EU LABEL
-    # -------------------------
-    content.append(Paragraph("🇪🇺 European Union – EUDR Compliance Framework", styles["Italic"]))
+    content.append(Paragraph(
+        "This document is a PRELIMINARY TECHNICAL ASSESSMENT and does not constitute official EUDR compliance certification.",
+        styles["Normal"]
+    ))
 
     doc.build(content)
 
-    return filename
+    try:
+        os.remove(qr_path)
+    except:
+        pass
+
+    return file_path
