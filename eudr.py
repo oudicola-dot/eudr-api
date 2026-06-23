@@ -12,21 +12,25 @@ DB_PATH = "eudr.db"
 GFW_API_KEY = os.getenv("GFW_API_KEY")
 
 # ========== EARTH ENGINE INITIALIZATION ==========
-EE_CREDENTIALS = os.getenv("EE_CREDENTIALS", "/etc/secrets/earth-engine-credentials.json")
+# NE PAS définir EE_CREDENTIALS avec os.getenv() ici
+# On va utiliser le chemin par défaut /etc/secrets/
 EE_PROJECT = os.getenv("EE_PROJECT", "superb-gear-473018-k1")
 
 # Variable pour suivre l'état d'initialisation
 EE_INITIALIZED = False
 
 print("🔍 Initializing Earth Engine...")
-print(f"📁 EE_CREDENTIALS path: {EE_CREDENTIALS}")
-print(f"📁 File exists: {os.path.exists(EE_CREDENTIALS)}")
+print(f"📁 EE_PROJECT: {EE_PROJECT}")
 
 try:
-    # Essayer avec le fichier de credentials
-    if os.path.exists(EE_CREDENTIALS):
+    # Essayer de lire depuis le secret file Render
+    cred_path = "/etc/secrets/earth-engine-credentials.json"
+    print(f"📁 Trying file: {cred_path}")
+    print(f"📁 File exists: {os.path.exists(cred_path)}")
+    
+    if os.path.exists(cred_path):
         print("📖 Reading credentials file...")
-        with open(EE_CREDENTIALS, "r") as f:
+        with open(cred_path, "r") as f:
             credentials_info = json.load(f)
         print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
         
@@ -38,11 +42,26 @@ try:
         EE_INITIALIZED = True
         print("🌍 Earth Engine initialized successfully with service account")
     else:
-        # Essayer sans credentials (authentification par défaut)
-        print("⚠️ No credentials file found, trying default authentication...")
-        ee.Initialize(project=EE_PROJECT)
-        EE_INITIALIZED = True
-        print("🌍 Earth Engine initialized with default credentials")
+        # Essayer avec la variable d'environnement EE_CREDENTIALS_JSON
+        credentials_json = os.getenv("EE_CREDENTIALS_JSON")
+        if credentials_json:
+            print("📖 Reading credentials from environment variable...")
+            credentials_info = json.loads(credentials_json)
+            print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
+            
+            credentials = ee.ServiceAccountCredentials(
+                credentials_info["client_email"],
+                key_data=json.dumps(credentials_info)
+            )
+            ee.Initialize(credentials, project=EE_PROJECT)
+            EE_INITIALIZED = True
+            print("🌍 Earth Engine initialized successfully from env var")
+        else:
+            # Fallback: essayer sans credentials
+            print("⚠️ No credentials found, trying default authentication...")
+            ee.Initialize(project=EE_PROJECT)
+            EE_INITIALIZED = True
+            print("🌍 Earth Engine initialized with default credentials")
 except Exception as e:
     print(f"⚠️ Earth Engine initialization failed: {e}")
     print("ℹ️ Will use GFW or fallback data sources")
