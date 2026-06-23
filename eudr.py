@@ -33,6 +33,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
 def compute_risk(lat: float, lon: float):
     print("========== compute_risk() called ==========")
     print(f"Lat: {lat}, Lon: {lon}")
@@ -53,10 +54,10 @@ def compute_risk(lat: float, lon: float):
         return fallback()
     
     try:
-        # ✅ BONNE URL GFW AVEC SQL
-        url = f"https://data-api.globalforestwatch.org/dataset/umd_tree_cover_loss/v1.11/query/json?sql=SELECT%20treeCover,%20lossYear%20FROM%20umd_tree_cover_loss%20WHERE%20latitude={lat}%20AND%20longitude={lon}"
+        # ✅ TEST AVEC umd_tree_cover_density_2000
+        url = f"https://data-api.globalforestwatch.org/dataset/umd_tree_cover_density_2000/v1.6/query/json?sql=SELECT%20treeCover%20FROM%20umd_tree_cover_density_2000%20WHERE%20latitude={lat}%20AND%20longitude={lon}"
         
-        print(f"🔄 Calling GFW: {url}")
+        print(f"🔄 Calling GFW (tree cover density): {url}")
         headers = {"x-api-key": GFW_API_KEY}
         response = requests.get(url, headers=headers, timeout=15)
         
@@ -75,19 +76,13 @@ def compute_risk(lat: float, lon: float):
         
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
             tree_cover = data["data"][0].get("treeCover", 0)
-            loss_year = data["data"][0].get("lossYear", 0)
         elif "treeCover" in data:
             tree_cover = data.get("treeCover", 0)
-            loss_year = data.get("lossYear", 0)
         
-        print(f"🌳 Tree Cover: {tree_cover}%, Loss Year: {loss_year}")
+        print(f"🌳 Tree Cover: {tree_cover}%")
         
-        # Règle EUDR
-        if tree_cover > 30 and loss_year > 2020:
-            risk_score = 85
-            risk_level = "HIGH"
-            compliant = "NON COMPLIANT"
-        elif tree_cover > 30 and loss_year <= 2020:
+        # Règle EUDR simplifiée (sans loss_year)
+        if tree_cover > 30:
             risk_score = 50
             risk_level = "MEDIUM"
             compliant = "COMPLIANT"
@@ -101,14 +96,13 @@ def compute_risk(lat: float, lon: float):
             "risk_level": risk_level,
             "eudr_compliant": compliant,
             "tree_cover": tree_cover,
-            "loss_year": loss_year,
-            "source": "gfw"
+            "loss_year": 0,
+            "source": "gfw_density"
         }
         
     except Exception as e:
         print(f"❌ GFW error: {e}")
         return fallback()
-
 
 def create_audit(name: str, lat: float, lon: float):
     audit_id = str(uuid.uuid4())
