@@ -1,13 +1,35 @@
-# v2.0 - GFW integration
+# v2.0 - GFW + Earth Engine integration
 import uuid
 import sqlite3
 import os
 import requests
+import ee
+import json
 from datetime import datetime
 from security import sign_audit
 
 DB_PATH = "eudr.db"
 GFW_API_KEY = os.getenv("GFW_API_KEY")
+
+# ========== EARTH ENGINE INITIALIZATION ==========
+EE_CREDENTIALS = os.getenv("EE_CREDENTIALS", "/etc/secrets/earth-engine-credentials.json")
+EE_PROJECT = os.getenv("EE_PROJECT", "superb-gear-473018-k1")
+
+try:
+    if os.path.exists(EE_CREDENTIALS):
+        with open(EE_CREDENTIALS, "r") as f:
+            credentials_info = json.load(f)
+        credentials = ee.ServiceAccountCredentials(
+            credentials_info["client_email"],
+            key_data=json.dumps(credentials_info)
+        )
+        ee.Initialize(credentials, project=EE_PROJECT)
+        print("🌍 Earth Engine initialized successfully")
+    else:
+        ee.Initialize(project=EE_PROJECT)
+        print("🌍 Earth Engine initialized with default credentials")
+except Exception as e:
+    print(f"⚠️ Earth Engine initialization failed: {e}")
 
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -35,10 +57,78 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ========== GFW API ==========
+def compute_risk_gfw(lat: float, lon: float):
+    print("🔄 Trying GFW API...")
+    if not GFW_API_KEY:
+        print("⚠️ GFW_API_KEY not set")
+        return None
+    
+    try:
+        url = f"https://data-api.globalforestwatch.org/dataset/umd_tree_cover_density_2000/v1.6/query/json?sql=SELECT%20treeCover%20FROM%20umd_tree_cover_density_2000%20WHERE%20latitude={lat}%20AND%20longitude={lon}"
+        headers = {"x-api-key": GFW_API_KEY}
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"⚠️ GFW returned {response.status_code}")
+            return None
+        
+        data = response.json()
+        tree_cover = 0
+        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+            tree_cover = data["data"][0].get("treeCover", 0)
+        elif "treeCover" in data:
+            tree_cover = data.get("treeCover", 0)
+        
+        return {
+            "tree_cover": tree_cover,
+            "loss_year": 0,
+            "source": "gfw"
+        }
+    except Exception as e:
+        print(f"❌ GFW error: {e}")
+        return None
+
+# ========== EARTH ENGINE API ==========
+def compute_risk_ee(lat: float, lon: float):
+    print("🌍 Trying Earth Engine...")
+    try:
+        point = ee.Geometry.Point(lon, lat)
+        dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
+        treecover = dataset.select('treecover2000').clip(point)
+        lossyear = dataset.select('lossyear').clip(point)
+        
+        treecover_val = treecover.reduceRegion(
+            reducer=ee.Reducer.first(),
+            geometry=point,
+            scale=30,
+            maxPixels=1e9
+        ).get('treecover2000').getInfo()
+        
+        lossyear_val = lossyear.reduceRegion(
+            reducer=ee.Reducer.first(),
+            geometry=point,
+            scale=30,
+            maxPixels=1e9
+        ).get('lossyear').getInfo()
+        
+        tree_cover = treecover_val if treecover_val is not None else 0
+        loss_year = lossyear_val if lossyear_val is not None else 0
+        
+        print(f"🌳 EE: tree_cover={tree_cover}, loss_year={loss_year}")
+        return {
+            "tree_cover": tree_cover,
+            "loss_year": loss_year,
+            "source": "ee"
+        }
+    except Exception as e:
+        print(f"❌ Earth Engine error: {e}")
+        return None
+
+# ========== ORCHESTRATEUR ==========
 def compute_risk(lat: float, lon: float):
     print("========== compute_risk() called ==========")
     print(f"Lat: {lat}, Lon: {lon}")
-    print(f"GFW_API_KEY present: {bool(GFW_API_KEY)}")
     
     def fallback():
         seed = abs(int((lat * 1000) + (lon * 1000)))
@@ -50,60 +140,51 @@ def compute_risk(lat: float, lon: float):
         else:
             return {"risk_score": risk, "risk_level": "HIGH", "eudr_compliant": "NON COMPLIANT", "tree_cover": 50, "loss_year": 2022, "source": "fallback"}
     
-    if not GFW_API_KEY:
-        print("⚠️ GFW_API_KEY not set, using fallback")
-        return fallback()
-    
-    try:
-        # ✅ TEST AVEC umd_tree_cover_density_2000
-        url = f"https://data-api.globalforestwatch.org/dataset/umd_tree_cover_density_2000/v1.6/query/json?sql=SELECT%20treeCover%20FROM%20umd_tree_cover_density_2000%20WHERE%20latitude={lat}%20AND%20longitude={lon}"
-        
-        print(f"🔄 Calling GFW (tree cover density): {url}")
-        headers = {"x-api-key": GFW_API_KEY}
-        response = requests.get(url, headers=headers, timeout=15)
-        
-        print(f"📡 GFW Status: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"⚠️ GFW returned {response.status_code}, using fallback")
-            return fallback()
-        
-        data = response.json()
-        print(f"✅ GFW Response: {data}")
-        
-        # Extraction des données
-        tree_cover = 0
-        loss_year = 0
-        
-        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-            tree_cover = data["data"][0].get("treeCover", 0)
-        elif "treeCover" in data:
-            tree_cover = data.get("treeCover", 0)
-        
-        print(f"🌳 Tree Cover: {tree_cover}%")
-        
-        # Règle EUDR simplifiée (sans loss_year)
-        if tree_cover > 30:
-            risk_score = 50
-            risk_level = "MEDIUM"
-            compliant = "COMPLIANT"
+    # 1. Essayer GFW
+    result = compute_risk_gfw(lat, lon)
+    if result:
+        tree_cover = result["tree_cover"]
+        loss_year = result["loss_year"]
+        source = result["source"]
+        if tree_cover > 30 and loss_year > 2020:
+            risk_score = 85; risk_level = "HIGH"; compliant = "NON COMPLIANT"
+        elif tree_cover > 30 and loss_year <= 2020:
+            risk_score = 50; risk_level = "MEDIUM"; compliant = "COMPLIANT"
         else:
-            risk_score = 15
-            risk_level = "LOW"
-            compliant = "COMPLIANT"
-        
+            risk_score = 15; risk_level = "LOW"; compliant = "COMPLIANT"
         return {
             "risk_score": risk_score,
             "risk_level": risk_level,
             "eudr_compliant": compliant,
             "tree_cover": tree_cover,
-            "loss_year": 0,
-            "source": "gfw_density"
+            "loss_year": loss_year,
+            "source": source
         }
-        
-    except Exception as e:
-        print(f"❌ GFW error: {e}")
-        return fallback()
+    
+    # 2. Essayer Earth Engine
+    result = compute_risk_ee(lat, lon)
+    if result:
+        tree_cover = result["tree_cover"]
+        loss_year = result["loss_year"]
+        source = result["source"]
+        if tree_cover > 30 and loss_year > 2020:
+            risk_score = 85; risk_level = "HIGH"; compliant = "NON COMPLIANT"
+        elif tree_cover > 30 and loss_year <= 2020:
+            risk_score = 50; risk_level = "MEDIUM"; compliant = "COMPLIANT"
+        else:
+            risk_score = 15; risk_level = "LOW"; compliant = "COMPLIANT"
+        return {
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+            "eudr_compliant": compliant,
+            "tree_cover": tree_cover,
+            "loss_year": loss_year,
+            "source": source
+        }
+    
+    # 3. Fallback
+    print("⚠️ Using fallback")
+    return fallback()
 
 def create_audit(name: str, lat: float, lon: float):
     audit_id = str(uuid.uuid4())
