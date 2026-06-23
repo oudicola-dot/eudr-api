@@ -51,11 +51,20 @@ def compute_risk(lat: float, lon: float):
         return fallback()
     
     try:
-        url = f"https://data-api.globalforestwatch.org/v1/tree-cover/latest?lat={lat}&lon={lon}"
-        headers = {"x-api-key": GFW_API_KEY}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+    print("========== GFW DEBUG ==========")
+    print("API KEY:", GFW_API_KEY[:8] + "..." if GFW_API_KEY else "NONE")
+
+    response = requests.get(
+        "https://data-api.globalforestwatch.org",
+        headers={"x-api-key": GFW_API_KEY},
+        timeout=10
+    )
+
+    print("STATUS:", response.status_code)
+    print("BODY:")
+    print(response.text[:3000])
+
+    return fallback()
         
         tree_cover = data.get("treeCover", 0)
         loss_year = data.get("lossYear", 0)
