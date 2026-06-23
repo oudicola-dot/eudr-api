@@ -1,16 +1,20 @@
 import os
+import pathlib
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from eudr import init_db, create_audit, get_audit
+from eudr import verify_signature
 from pdf_report import generate_eudr_pdf
 
 
-# ---------------- APP ----------------
+# ----------------------------
+# APP CONFIG
+# ----------------------------
 
-app = FastAPI(title="EUDR API V1 Clean", version="1.1")
+app = FastAPI(title="EUDR API - Tierras de Montaña", version="1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,22 +29,28 @@ API_KEY = os.getenv("API_KEY", "CHANGE_ME")
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
 
-# ---------------- INIT DB ----------------
+# ----------------------------
+# INIT DB
+# ----------------------------
 
 init_db()
 
 
-# ---------------- ROOT ----------------
+# ----------------------------
+# ROOT
+# ----------------------------
 
 @app.get("/")
 def root():
     return {
         "status": "online",
-        "service": "EUDR Clean API V1"
+        "service": "EUDR API - Tierras de Montaña"
     }
 
 
-# ---------------- CHECK (CREATE AUDIT) ----------------
+# ----------------------------
+# CREATE AUDIT
+# ----------------------------
 
 @app.post("/eudr-check")
 def eudr_check(payload: dict):
@@ -57,7 +67,9 @@ def eudr_check(payload: dict):
     return audit
 
 
-# ---------------- PDF GENERATION ----------------
+# ----------------------------
+# GENERATE PDF
+# ----------------------------
 
 @app.post("/eudr-pdf")
 def eudr_pdf(payload: dict):
@@ -88,14 +100,16 @@ def eudr_pdf(payload: dict):
     }
 
 
-# ---------------- DOWNLOAD PDF ----------------
+# ----------------------------
+# DOWNLOAD PDF
+# ----------------------------
 
 @app.get("/download/{audit_id}")
 def download(audit_id: str):
 
     file_path = f"/tmp/{audit_id}.pdf"
 
-    if not os.path.exists(file_path):
+    if not pathlib.Path(file_path).exists():
         raise HTTPException(
             status_code=404,
             detail="PDF not found"
@@ -108,14 +122,21 @@ def download(audit_id: str):
     )
 
 
-# ---------------- VERIFY (TRUTH LAYER) ----------------
+# ----------------------------
+# VERIFY (SECURE)
+# ----------------------------
 
 @app.get("/eudr/verify/{audit_id}")
-def verify(audit_id: str):
+def verify(audit_id: str, sig: str = None):
 
     audit = get_audit(audit_id)
 
     if not audit:
         raise HTTPException(status_code=404, detail="Audit not found")
+
+    # 🔐 STEP 3 SECURITY CHECK
+    if sig:
+        if not verify_signature(audit_id, sig):
+            raise HTTPException(status_code=403, detail="Invalid signature")
 
     return audit
