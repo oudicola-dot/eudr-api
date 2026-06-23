@@ -1,3 +1,4 @@
+# v2.0 - GFW integration
 import uuid
 import sqlite3
 import os
