@@ -1,7 +1,6 @@
 import os
 import pathlib
 import hashlib
-from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +9,15 @@ from fastapi.responses import FileResponse, HTMLResponse
 from eudr import init_db, create_audit, get_audit
 from pdf_report import generate_eudr_pdf
 
-app = FastAPI(title="EUDR Enterprise Registry", version="2.0")
+
+# ----------------------------
+# APP
+# ----------------------------
+
+app = FastAPI(
+    title="EUDR Enterprise Registry",
+    version="2.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,13 +27,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 API_KEY = os.getenv("API_KEY", "CHANGE_ME")
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
 init_db()
 
 
-# ---------------- ROOT ----------------
+# ----------------------------
+# ROOT
+# ----------------------------
 
 @app.get("/")
 def root():
@@ -36,7 +46,9 @@ def root():
     }
 
 
-# ---------------- CREATE AUDIT ----------------
+# ----------------------------
+# CREATE AUDIT
+# ----------------------------
 
 @app.post("/eudr-check")
 def eudr_check(payload: dict):
@@ -52,32 +64,31 @@ def eudr_check(payload: dict):
 
     audit_id = audit["audit_id"]
 
-    # SHA256 enterprise fingerprint
+    # SHA256 fingerprint
     sha = hashlib.sha256(
         f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
     ).hexdigest()
 
     audit["sha256"] = sha
-
     audit["verify_url"] = f"{BASE_URL}/audit/{audit_id}"
     audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}"
 
-    # PDF généré immédiatement
+    # PDF generation (IMPORTANT: signature must match pdf_report.py)
     generate_eudr_pdf(
         audit_id=audit_id,
         name=audit["farm_name"],
         lat=audit["latitude"],
         lon=audit["longitude"],
         risk_score=audit["risk_score"],
-        risk_level=audit["risk_level"],
-        sha256=sha,
-        verify_url=audit["verify_url"]
+        risk_level=audit["risk_level"]
     )
 
     return audit
 
 
-# ---------------- PUBLIC AUDIT PAGE ----------------
+# ----------------------------
+# PUBLIC HTML PAGE
+# ----------------------------
 
 @app.get("/audit/{audit_id}", response_class=HTMLResponse)
 def audit_page(audit_id: str):
@@ -91,7 +102,7 @@ def audit_page(audit_id: str):
         f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
     ).hexdigest()
 
-    html = f"""
+    return HTMLResponse(f"""
     <html>
     <head>
         <title>EUDR Audit {audit_id}</title>
@@ -111,6 +122,7 @@ def audit_page(audit_id: str):
             .ok {{ color:#00ff99; }}
         </style>
     </head>
+
     <body>
         <div class="box">
             <h2>🌿 EUDR Enterprise Audit</h2>
@@ -122,24 +134,26 @@ def audit_page(audit_id: str):
 
             <p><b>Risk:</b> {audit['risk_level']} ({audit['risk_score']})</p>
 
-            <p class="ok"><b>Status:</b> VERIFIED RECORD (PRELIMINARY)</p>
+            <p class="ok"><b>Status:</b> PRELIMINARY RECORD</p>
 
             <hr>
 
             <p><b>SHA256:</b><br>{sha}</p>
 
-            <p><a href="/download/{audit_id}" style="color:#00ff99">
-                Download PDF
-            </a></p>
+            <p>
+                <a href="/download/{audit_id}" style="color:#00ff99">
+                    Download PDF
+                </a>
+            </p>
         </div>
     </body>
     </html>
-    """
-
-    return HTMLResponse(html)
+    """)
 
 
-# ---------------- DOWNLOAD PDF ----------------
+# ----------------------------
+# DOWNLOAD PDF
+# ----------------------------
 
 @app.get("/download/{audit_id}")
 def download(audit_id: str):
