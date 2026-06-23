@@ -1,14 +1,14 @@
 import uuid
 
 # ----------------------------
-# SIMPLE IN-MEMORY REGISTRY
+# MEMORY REGISTRY (V1 SIMPLE)
 # ----------------------------
 
 AUDITS = {}
 
 
 # ----------------------------
-# RISK ENGINE (MVP LEGAL SAFE)
+# RISK ENGINE (SIMPLE + STABLE)
 # ----------------------------
 
 def compute_risk(lat: float, lon: float):
@@ -27,7 +27,7 @@ def compute_risk(lat: float, lon: float):
 
 
 # ----------------------------
-# CREATE AUDIT
+# CREATE AUDIT (MAIN FUNCTION)
 # ----------------------------
 
 def create_audit(api_key: str, expected_key: str, name: str, lat: float, lon: float):
@@ -49,20 +49,17 @@ def create_audit(api_key: str, expected_key: str, name: str, lat: float, lon: fl
         "risk_level": risk_level,
 
         "status": "PRELIMINARY RECORD",
-        "issuer": "Tierras de Montaña",
-
-        # SaaS links (filled later in main.py)
-        "verify_url": None,
-        "pdf_url": None,
+        "issuer": "Tierras de Montaña"
     }
 
+    # STORE AUDIT (IMPORTANT)
     AUDITS[audit_id] = audit
 
     return audit, None
 
 
 # ----------------------------
-# GET AUDIT
+# GET ONE AUDIT
 # ----------------------------
 
 def get_audit(audit_id: str):
@@ -71,7 +68,16 @@ def get_audit(audit_id: str):
 
 
 # ----------------------------
-# LIST (OPTION DEBUG)
+# CHECK EXISTENCE ONLY
+# ----------------------------
+
+def audit_exists(audit_id: str) -> bool:
+
+    return audit_id in AUDITS
+
+
+# ----------------------------
+# DEBUG (OPTION)
 # ----------------------------
 
 def list_audits():
