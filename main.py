@@ -27,7 +27,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 API_KEY = os.getenv("API_KEY", "CHANGE_ME")
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
@@ -40,14 +39,11 @@ init_db()
 
 @app.get("/")
 def root():
-    return {
-        "status": "online",
-        "service": "EUDR Enterprise Registry"
-    }
+    return {"status": "online", "service": "EUDR API"}
 
 
 # ----------------------------
-# CREATE AUDIT
+# CREATE AUDIT (ONLY ENTRY POINT)
 # ----------------------------
 
 @app.post("/eudr-check")
@@ -56,29 +52,28 @@ def eudr_check(payload: dict):
     if payload.get("api_key") != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    audit = create_audit(
-        payload.get("name"),
-        float(payload.get("lat")),
-        float(payload.get("lon"))
-    )
+    name = payload.get("name")
+    lat = float(payload.get("lat"))
+    lon = float(payload.get("lon"))
 
+    audit = create_audit(name, lat, lon)
     audit_id = audit["audit_id"]
 
     # SHA256 fingerprint
     sha = hashlib.sha256(
-        f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
+        f"{audit_id}{name}{lat}{lon}".encode()
     ).hexdigest()
 
     audit["sha256"] = sha
     audit["verify_url"] = f"{BASE_URL}/audit/{audit_id}"
     audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}"
 
-    # PDF generation (IMPORTANT: signature must match pdf_report.py)
+    # Generate PDF immediately
     generate_eudr_pdf(
         audit_id=audit_id,
-        name=audit["farm_name"],
-        lat=audit["latitude"],
-        lon=audit["longitude"],
+        name=name,
+        lat=lat,
+        lon=lon,
         risk_score=audit["risk_score"],
         risk_level=audit["risk_level"]
     )
@@ -87,7 +82,7 @@ def eudr_check(payload: dict):
 
 
 # ----------------------------
-# PUBLIC HTML PAGE
+# PUBLIC AUDIT PAGE (HTML)
 # ----------------------------
 
 @app.get("/audit/{audit_id}", response_class=HTMLResponse)
@@ -104,28 +99,9 @@ def audit_page(audit_id: str):
 
     return HTMLResponse(f"""
     <html>
-    <head>
-        <title>EUDR Audit {audit_id}</title>
-        <style>
-            body {{
-                font-family: Arial;
-                background:#0b1220;
-                color:white;
-                padding:40px;
-            }}
-            .box {{
-                background:#111a2e;
-                padding:20px;
-                border-radius:12px;
-                max-width:600px;
-            }}
-            .ok {{ color:#00ff99; }}
-        </style>
-    </head>
-
-    <body>
-        <div class="box">
-            <h2>🌿 EUDR Enterprise Audit</h2>
+    <body style="font-family:Arial;background:#0b1220;color:white;padding:40px;">
+        <div style="background:#111a2e;padding:20px;border-radius:12px;max-width:600px;">
+            <h2>🌿 EUDR Audit</h2>
 
             <p><b>ID:</b> {audit_id}</p>
             <p><b>Farm:</b> {audit['farm_name']}</p>
@@ -134,17 +110,15 @@ def audit_page(audit_id: str):
 
             <p><b>Risk:</b> {audit['risk_level']} ({audit['risk_score']})</p>
 
-            <p class="ok"><b>Status:</b> PRELIMINARY RECORD</p>
+            <p style="color:#00ff99;"><b>Status:</b> PRELIMINARY RECORD</p>
 
             <hr>
 
             <p><b>SHA256:</b><br>{sha}</p>
 
-            <p>
-                <a href="/download/{audit_id}" style="color:#00ff99">
-                    Download PDF
-                </a>
-            </p>
+            <a href="/download/{audit_id}" style="color:#00ff99">
+                Download PDF
+            </a>
         </div>
     </body>
     </html>
