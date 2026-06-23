@@ -36,6 +36,10 @@ def init_db():
 
 def compute_risk(lat: float, lon: float):
 
+    print("################################")
+    print("COMPUTE_RISK EXECUTED")
+    print("################################")
+
     def fallback():
         return {
             "risk_score": 50,
