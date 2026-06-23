@@ -46,18 +46,23 @@ def compute_risk(lat: float, lon: float):
             "source": "fallback"
         }
 
+    print("========== GFW DEBUG ==========")
+    print("GFW_API_KEY =", GFW_API_KEY)
+
     if not GFW_API_KEY:
+        print("NO GFW API KEY FOUND")
         return fallback()
 
     try:
-        print("========== GFW DEBUG ==========")
+
         print("LAT:", lat)
         print("LON:", lon)
-        print("API KEY PRESENT:", bool(GFW_API_KEY))
 
         response = requests.get(
             "https://data-api.globalforestwatch.org",
-            headers={"x-api-key": GFW_API_KEY},
+            headers={
+                "x-api-key": GFW_API_KEY
+            },
             timeout=10
         )
 
@@ -66,6 +71,7 @@ def compute_risk(lat: float, lon: float):
         print(response.text[:3000])
 
     except Exception as e:
+
         print("DEBUG ERROR:", str(e))
 
     print("========== END DEBUG ==========")
