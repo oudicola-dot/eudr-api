@@ -1,82 +1,45 @@
-import ee
+import uuid
 
-# ----------------------------
-# INIT EE
-# ----------------------------
-def init_ee(project_id):
-    ee.Initialize(project=project_id)
+AUDITS = {}
 
+def compute_risk(lat: float, lon: float):
 
-# ----------------------------
-# AREA
-# ----------------------------
-def get_area(lat, lon, radius=1000):
-    point = ee.Geometry.Point([lon, lat])
-    return point.buffer(radius)
+    seed = abs(int((lat * 1000) + (lon * 1000)))
+    risk = seed % 100
 
+    if risk < 30:
+        level = "LOW"
+    elif risk < 70:
+        level = "MEDIUM"
+    else:
+        level = "HIGH"
 
-# ----------------------------
-# FOREST 2020 (FIX SAFE DATASET)
-# ----------------------------
-def forest_2020(area):
-
-    img = ee.Image("UMD/hansen/global_forest_change_2025_v1_13")
-
-    treecover = img.select("treecover2000")
-
-    value = treecover.reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=area,
-        scale=30
-    ).get("treecover2000")
-
-    return value.getInfo()
+    return risk, level
 
 
-# ----------------------------
-# NDVI CURRENT (SAFE SENTINEL)
-# ----------------------------
-def ndvi_current(area):
+def create_audit(api_key_ok: bool, api_key: str, expected_key: str, name, lat, lon):
 
-    img = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
-        .filterBounds(area) \
-        .filterDate("2023-01-01", "2025-01-01") \
-        .median()
+    if api_key != expected_key:
+        return None, "INVALID_KEY"
 
-    ndvi = img.normalizedDifference(["B8", "B4"])
+    risk_score, risk_level = compute_risk(lat, lon)
 
-    value = ndvi.reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=area,
-        scale=10
-    ).get("nd")
+    audit_id = str(uuid.uuid4())
 
-    # FIX SAFE
-    if value is None:
-        return 0
+    audit = {
+        "audit_id": audit_id,
+        "farm_name": name,
+        "latitude": lat,
+        "longitude": lon,
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "status": "PRELIMINARY RECORD",
+    }
 
-    return value.getInfo()
+    AUDITS[audit_id] = audit
+
+    return audit, None
 
 
-# ----------------------------
-# DEFORESTATION AFTER 2020
-# ----------------------------
-def deforestation_after_2020(area):
-
-    img = ee.Image("UMD/hansen/global_forest_change_2025_v1_13")
-
-    loss = img.select("lossyear")
-
-    # years > 20 = post 2020
-    post2020 = loss.gt(20)
-
-    value = post2020.reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=area,
-        scale=30
-    ).get("lossyear")
-
-    if value is None:
-        return 0
-
-    return value.getInfo()
+def get_audit(audit_id: str):
+    return AUDITS.get(audit_id)
