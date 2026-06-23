@@ -1,7 +1,6 @@
 import os
 import hashlib
 import qrcode
-import requests
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -17,28 +16,27 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
 
-BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
+BASE_URL = os.getenv(
+    "BASE_URL",
+    "https://eudr-api-mi0x.onrender.com"
+)
 
-LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
+# 🔥 IMPORTANT: mettre logo dans repo (PAS URL)
+LOGO_PATH = "assets/tdm_logo.png"
 
 
 # ----------------------------
-# LOGO DOWNLOAD (CACHE SAFE)
+# SAFE LOGO
 # ----------------------------
 
 def get_logo():
-    path = "/tmp/tdm_logo.png"
-
-    if not os.path.exists(path):
-        r = requests.get(LOGO_URL, timeout=10)
-        with open(path, "wb") as f:
-            f.write(r.content)
-
-    return path
+    if os.path.exists(LOGO_PATH):
+        return LOGO_PATH
+    return None
 
 
 # ----------------------------
-# PDF GENERATOR PREMIUM
+# PDF GENERATOR PREMIUM FIXED
 # ----------------------------
 
 def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
@@ -49,7 +47,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
     styles = getSampleStyleSheet()
     content = []
 
-    # ---------------- COVER PAGE ----------------
+    # ---------------- COVER ----------------
     content.append(Spacer(1, 40))
 
     content.append(Paragraph(
@@ -64,12 +62,10 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
 
     content.append(Spacer(1, 20))
 
-    # LOGO CENTERED STYLE
-    try:
-        logo = Image(get_logo(), width=160, height=80)
-        content.append(logo)
-    except:
-        pass
+    # LOGO SAFE
+    logo = get_logo()
+    if logo:
+        content.append(Image(logo, width=160, height=80))
 
     content.append(Spacer(1, 30))
 
@@ -97,28 +93,21 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
         f"{audit_id}{name}{lat}{lon}".encode()
     ).hexdigest()
 
-    # ---------------- SECTION 1 ----------------
+    # ---------------- SUMMARY ----------------
     content.append(Paragraph("EXECUTIVE SUMMARY", styles["Heading1"]))
     content.append(Spacer(1, 10))
 
-    content.append(Paragraph(
-        f"Farm: <b>{name}</b>",
-        styles["Normal"]
-    ))
-
-    content.append(Paragraph(
-        f"Location: {lat}, {lon}",
-        styles["Normal"]
-    ))
+    content.append(Paragraph(f"Farm: <b>{name}</b>", styles["Normal"]))
+    content.append(Paragraph(f"Location: {lat}, {lon}", styles["Normal"]))
 
     content.append(Spacer(1, 20))
 
-    # ---------------- RISK TABLE ----------------
+    # ---------------- TABLE ----------------
     table = Table([
         ["Risk Score", risk_score],
         ["Risk Level", risk_level],
         ["Issuer", "Tierras de Montaña"],
-        ["Status", "PRELIMINARY COMPLIANCE"]
+        ["Status", "PRELIMINARY"]
     ])
 
     table.setStyle(TableStyle([
@@ -132,7 +121,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
 
     content.append(Spacer(1, 25))
 
-    # ---------------- QR SECTION ----------------
+    # ---------------- QR ----------------
     content.append(Paragraph("VERIFY CERTIFICATE", styles["Heading1"]))
     content.append(Spacer(1, 10))
 
@@ -145,9 +134,9 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
         styles["Normal"]
     ))
 
+    # ---------------- SHA ----------------
     content.append(Spacer(1, 15))
 
-    # ---------------- SECURITY FOOTER ----------------
     content.append(Paragraph(
         f"<b>SHA256:</b> {sha}",
         styles["Normal"]
@@ -156,6 +145,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level):
     # ---------------- BUILD ----------------
     doc.build(content)
 
+    # cleanup
     try:
         os.remove(qr_path)
     except:
