@@ -5,12 +5,16 @@ from datetime import datetime
 DB_PATH = "eudr.db"
 
 
-# ----------------------------
-# INIT DB
-# ----------------------------
+# ---------------- DB CONNECTION ----------------
+
+def get_conn():
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
+
+
+# ---------------- INIT DB ----------------
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
 
     c.execute("""
@@ -31,12 +35,7 @@ def init_db():
     conn.close()
 
 
-init_db()
-
-
-# ----------------------------
-# RISK ENGINE (stable deterministic)
-# ----------------------------
+# ---------------- RISK ENGINE ----------------
 
 def compute_risk(lat: float, lon: float):
     seed = abs(int((lat * 1000) + (lon * 1000)))
@@ -52,17 +51,11 @@ def compute_risk(lat: float, lon: float):
     return risk, level
 
 
-# ----------------------------
-# CREATE AUDIT (SaaS CORE)
-# ----------------------------
+# ---------------- CREATE AUDIT ----------------
 
-def create_audit(api_key, expected_key, name, lat, lon):
-
-    if api_key != expected_key:
-        return None, "INVALID_API_KEY"
+def create_audit(name: str, lat: float, lon: float):
 
     audit_id = str(uuid.uuid4())
-
     risk_score, risk_level = compute_risk(lat, lon)
 
     audit = {
@@ -77,36 +70,24 @@ def create_audit(api_key, expected_key, name, lat, lon):
         "created_at": datetime.utcnow().isoformat()
     }
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
 
     c.execute("""
         INSERT INTO audits VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
-        audit_id,
-        name,
-        lat,
-        lon,
-        risk_score,
-        risk_level,
-        audit["status"],
-        audit["issuer"],
-        audit["created_at"]
-    ))
+    """, tuple(audit.values()))
 
     conn.commit()
     conn.close()
 
-    return audit, None
+    return audit
 
 
-# ----------------------------
-# GET AUDIT (REAL QUERY DB)
-# ----------------------------
+# ---------------- GET AUDIT ----------------
 
 def get_audit(audit_id: str):
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
 
     c.execute("SELECT * FROM audits WHERE audit_id=?", (audit_id,))
