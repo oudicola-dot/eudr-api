@@ -4,4 +4,4 @@ earthengine-api
 reportlab
 qrcode
 pillow
-python-multipart
+EOF
