@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-earthengine-api
 reportlab
 qrcode
 pillow
+requests
