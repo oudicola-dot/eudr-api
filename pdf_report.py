@@ -3,7 +3,6 @@ import hashlib
 import qrcode
 import requests
 from datetime import datetime
-from io import BytesIO
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -14,7 +13,6 @@ from reportlab.platypus import (
     TableStyle,
     HRFlowable
 )
-
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import cm, mm
@@ -25,9 +23,7 @@ from security import sign_audit
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
 
-
-# ========== UTILITY FUNCTIONS ==========
-
+# ---------- UTILITY FUNCTIONS ----------
 def get_logo():
     path = "/tmp/tdm_logo.png"
     if not os.path.exists(path):
@@ -43,7 +39,6 @@ def get_logo():
             return None
     return path
 
-
 def get_source_label(source):
     labels = {
         "ee": "🌍 Earth Engine (Google)",
@@ -53,13 +48,10 @@ def get_source_label(source):
     }
     return labels.get(source, f"📡 {source}")
 
-
 def get_status_color(status):
     return "#00cc66" if status == "COMPLIANT" else "#ff3333"
 
-
-# ========== CUSTOM STYLES ==========
-
+# ---------- CUSTOM STYLES ----------
 def get_custom_styles():
     styles = getSampleStyleSheet()
     
@@ -70,7 +62,7 @@ def get_custom_styles():
     styles['Title'].fontName = 'Helvetica-Bold'
     styles['Title'].spaceAfter = 4
     
-    # Create 'SubTitle' style (doesn't exist by default)
+    # Create 'SubTitle' style
     styles.add(ParagraphStyle(
         name='SubTitle',
         parent=styles['Normal'],
@@ -81,7 +73,7 @@ def get_custom_styles():
         spaceAfter=8
     ))
     
-    # Add other custom styles
+    # Other custom styles
     styles.add(ParagraphStyle(
         name='HeaderText',
         parent=styles['Normal'],
@@ -127,12 +119,20 @@ def get_custom_styles():
         alignment=TA_CENTER,
         fontName='Helvetica-Bold'
     ))
+    # New style for black boxes
+    styles.add(ParagraphStyle(
+        name='BoxText',
+        parent=styles['Normal'],
+        fontSize=7,
+        textColor=colors.HexColor("#ffffff"),
+        fontName='Helvetica',
+        alignment=TA_LEFT,
+        leading=10
+    ))
     
     return styles
 
-
-# ========== PDF GENERATION (1 PAGE) ==========
-
+# ---------- PDF GENERATION ----------
 def generate_eudr_pdf(
     audit_id,
     name,
@@ -173,9 +173,7 @@ def generate_eudr_pdf(
     verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     
-    # ==========================================
-    # QR CODE
-    # ==========================================
+    # ---------- QR CODE ----------
     qr_path = f"/tmp/{audit_id}_qr.png"
     qr_image = None
     try:
@@ -186,10 +184,7 @@ def generate_eudr_pdf(
     except Exception as e:
         print("❌ QR ERROR:", str(e))
     
-    # ==========================================
-    # HEADER: Logo left + QR right
-    # ==========================================
-    
+    # ---------- HEADER: Logo left + QR right ----------
     logo = get_logo()
     logo_img = None
     if logo:
@@ -198,43 +193,50 @@ def generate_eudr_pdf(
         except Exception as e:
             print("❌ LOGO ERROR:", str(e))
     
-    header_data = []
-    
-    # Row 1: Logo + Title + QR
-    header_row = []
+    # First row: Logo + Title + QR
+    header_row1 = []
     if logo_img:
-        header_row.append(logo_img)
+        header_row1.append(logo_img)
     else:
-        header_row.append(Paragraph("TIERRAS DE MONTAÑA", styles["Title"]))
+        header_row1.append(Paragraph("TIERRAS DE MONTAÑA", styles["Title"]))
     
-    center_cell = Paragraph(
-        f'<font size="14" color="#000000"><b>EUDR TRACEABILITY REPORT</b></font>',
+    # Center title
+    header_row1.append(Paragraph(
+        '<font size="14" color="#000000"><b>EUDR TRACEABILITY REPORT</b></font>',
         styles["HeaderText"]
-    )
-    header_row.append(center_cell)
+    ))
     
+    # Right: QR
     if qr_image:
-        qr_cell = qr_image
+        header_row1.append(qr_image)
     else:
-        qr_cell = Paragraph("QR", styles["HeaderText"])
-    header_row.append(qr_cell)
+        header_row1.append(Paragraph("QR", styles["HeaderText"]))
     
-    header_data.append(header_row)
+    # Second row: Company info (left) and "Check with QR" (right) - but we want company info on left with date on right
+    # We'll restructure: put company info in left cell, date in right cell, and "Check with QR" as separate?
+    # Better: Use a 3-column table with left: company info, center: empty, right: date + check text?
+    # Simpler: put company info and date in same row, left-aligned company, right-aligned date.
+    # We'll rebuild header differently.
+    header_data = [
+        header_row1,  # row 0
+        [
+            Paragraph(
+                '<font size="8" color="#555555">Sarah Jo SAS • NIT: 900693208-2 • contact@tierrasdemontana.com</font>',
+                styles["HeaderText"]
+            ),
+            Paragraph(
+                f'<font size="8" color="#555555">{current_date_short}</font>',
+                styles["HeaderText"]
+            ),
+            Paragraph(
+                f'<font size="7" color="#00cc66"><b>✓ Check with QR</b></font>',
+                styles["CheckText"]
+            )
+        ]
+    ]
     
-    # Row 2: Company info
-    header_data.append([
-        Paragraph("", styles["HeaderText"]),
-        Paragraph(
-            '<font size="8" color="#555555">Sarah Jo SAS • NIT: 900693208-2 • contact@tierrasdemontana.com</font>',
-            styles["HeaderText"]
-        ),
-        Paragraph(
-            f'<font size="7" color="#00cc66"><b>✓ Check with QR</b></font>',
-            styles["CheckText"]
-        )
-    ])
-    
-    header_table = Table(header_data, colWidths=[3*cm, 8*cm, 3*cm])
+    # Adjust column widths: left (company) takes more, center (date) small, right (QR label) small
+    header_table = Table(header_data, colWidths=[6*cm, 4*cm, 3*cm])
     header_table.setStyle(TableStyle([
         ("ALIGN", (0, 0), (0, -1), "LEFT"),
         ("ALIGN", (1, 0), (1, -1), "CENTER"),
@@ -248,9 +250,7 @@ def generate_eudr_pdf(
     content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd")))
     content.append(Spacer(1, 0.2*cm))
     
-    # ==========================================
-    # STATUS + SOURCE
-    # ==========================================
+    # ---------- STATUS + SOURCE ----------
     status_data = [
         ["Status", f'<font color="{status_color}"><b>{eudr_compliant}</b></font>'],
         ["Source", source_label],
@@ -270,9 +270,7 @@ def generate_eudr_pdf(
     content.append(status_table)
     content.append(Spacer(1, 0.2*cm))
     
-    # ==========================================
-    # FARM DETAILS
-    # ==========================================
+    # ---------- FARM DETAILS ----------
     details = [
         ["Farm", name],
         ["Latitude", f"{lat:.6f}"],
@@ -300,16 +298,19 @@ def generate_eudr_pdf(
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
     ]))
     content.append(detail_table)
-    
     content.append(Spacer(1, 0.2*cm))
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
     content.append(Spacer(1, 0.1*cm))
     
-    # ==========================================
-    # RISK LEGEND
-    # ==========================================
+    # ---------- RISK LEGEND WITH COLORS ----------
+    # We'll use a table with colored circles or text with background colors.
+    # We'll use emojis and background colors for each cell.
     legend_data = [
-        ["🟢 Low (0-30)", "🟡 Medium (31-70)", "🔴 High (71-100)"]
+        [
+            Paragraph('<font color="#28a745">●</font> Low (0-30)', styles["HeaderText"]),
+            Paragraph('<font color="#ffc107">●</font> Medium (31-70)', styles["HeaderText"]),
+            Paragraph('<font color="#dc3545">●</font> High (71-100)', styles["HeaderText"])
+        ]
     ]
     legend_table = Table(legend_data, colWidths=[5*cm, 5*cm, 5*cm])
     legend_table.setStyle(TableStyle([
@@ -318,40 +319,52 @@ def generate_eudr_pdf(
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#e8f5e9")),
+        ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#fff8e1")),
+        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#ffebee")),
     ]))
     content.append(legend_table)
     
-    content.append(Spacer(1, 0.2*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
-    content.append(Spacer(1, 0.1*cm))
-    
-    # ==========================================
-    # VERIFICATION: URL + SHA256
-    # ==========================================
-    content.append(Paragraph(
-        f'<font size="7"><b>🔗 Verify:</b> {verify_url}</font>',
-        styles["HeaderText"]
-    ))
+    # Add criteria note
     content.append(Spacer(1, 0.05*cm))
     content.append(Paragraph(
-        f'<font size="7"><b>🔐 SHA256:</b> {sha}</font>',
-        styles["HeaderText"]
+        '<font size="6" color="#555555"><b>Criteria:</b> Tree Cover > 30% + Loss Year > 2020 = High Risk</font>',
+        styles["Legal"]
     ))
+    content.append(Spacer(1, 0.1*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
+    content.append(Spacer(1, 0.1*cm))
+    
+    # ---------- VERIFICATION: URL + SHA256 in black boxes ----------
+    # We'll create a table with two rows, each with a black background and white text.
+    box_data = [
+        [Paragraph(f'<b>Verify:</b> {verify_url}', styles["BoxText"])],
+        [Paragraph(f'<b>SHA256:</b> {sha}', styles["BoxText"])]
+    ]
+    box_table = Table(box_data, colWidths=[doc.width])
+    box_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#000000")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    content.append(box_table)
     
     content.append(Spacer(1, 0.1*cm))
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
     content.append(Spacer(1, 0.1*cm))
     
-    # ==========================================
-    # LEGAL NOTICES (compact, multi-line)
-    # ==========================================
+    # ---------- LEGAL NOTICES ----------
     legal_lines = [
         "⚖️ EUDR (EU) 2023/1115 • OECD • UN • ILO • UNCCD • UNFCCC",
         "🔒 Law 1581/2012 • GDPR EU 2016/679, Art.6",
-        "⚠️ Report generated from satellite data -",
-        "Tierras de Montaña is not responsible for decisions made based on this report."
+        "⚠️ Report generated from satellite data - Tierras de Montaña is not responsible for decisions made based on this report."
     ]
-    
     for line in legal_lines:
         content.append(Paragraph(
             f'<font size="5" color="#666666">{line}</font>',
@@ -365,10 +378,7 @@ def generate_eudr_pdf(
         styles["Legal"]
     ))
     
-    # ==========================================
-    # BUILD PDF
-    # ==========================================
-    
+    # ---------- BUILD PDF ----------
     print("📄 BUILDING PDF...")
     doc.build(content)
     print("✅ PDF BUILT")
