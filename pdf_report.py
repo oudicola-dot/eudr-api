@@ -70,14 +70,18 @@ def get_custom_styles():
     styles['Title'].fontName = 'Helvetica-Bold'
     styles['Title'].spaceAfter = 4
     
-    # Modify existing 'SubTitle' style
-    styles['SubTitle'].fontSize = 10
-    styles['SubTitle'].textColor = colors.HexColor("#555555")
-    styles['SubTitle'].alignment = TA_CENTER
-    styles['SubTitle'].fontName = 'Helvetica'
-    styles['SubTitle'].spaceAfter = 8
+    # Create 'SubTitle' style (doesn't exist by default)
+    styles.add(ParagraphStyle(
+        name='SubTitle',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor("#555555"),
+        alignment=TA_CENTER,
+        fontName='Helvetica',
+        spaceAfter=8
+    ))
     
-    # Add new custom styles
+    # Add other custom styles
     styles.add(ParagraphStyle(
         name='HeaderText',
         parent=styles['Normal'],
