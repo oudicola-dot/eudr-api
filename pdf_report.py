@@ -3,6 +3,7 @@ import hashlib
 import qrcode
 import requests
 from datetime import datetime
+from io import BytesIO
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -11,7 +12,6 @@ from reportlab.platypus import (
     Image,
     Table,
     TableStyle,
-    PageBreak,
     HRFlowable
 )
 
@@ -55,7 +55,7 @@ def get_source_label(source):
 
 
 def get_status_color(status):
-    return "#00ff99" if status == "COMPLIANT" else "#ff4444"
+    return "#00cc66" if status == "COMPLIANT" else "#ff3333"
 
 
 # ========== STYLES PERSONNALISÉS ==========
@@ -64,58 +64,72 @@ def get_custom_styles():
     styles = getSampleStyleSheet()
     
     styles.add(ParagraphStyle(
-        name='CustomTitle',
-        parent=styles['Title'],
-        fontSize=22,
-        textColor=colors.HexColor("#00ff99"),
+        name='Title',
+        parent=styles['Normal'],
+        fontSize=18,
+        textColor=colors.HexColor("#000000"),
         alignment=TA_CENTER,
-        spaceAfter=4,
+        fontName='Helvetica-Bold',
+        spaceAfter=4
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='SubTitle',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor("#555555"),
+        alignment=TA_CENTER,
+        fontName='Helvetica',
+        spaceAfter=8
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='HeaderText',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.HexColor("#333333"),
+        fontName='Helvetica'
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='Label',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.HexColor("#555555"),
         fontName='Helvetica-Bold'
     ))
     
     styles.add(ParagraphStyle(
-        name='CustomHeading2',
-        parent=styles['Heading2'],
-        fontSize=12,
-        textColor=colors.HexColor("#a0aec0"),
-        alignment=TA_CENTER,
-        spaceAfter=10,
+        name='Value',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.HexColor("#000000"),
         fontName='Helvetica'
     ))
     
     styles.add(ParagraphStyle(
-        name='CustomNormal',
+        name='Status',
         parent=styles['Normal'],
-        fontSize=9,
-        textColor=colors.HexColor("#e2e8f0"),
-        fontName='Helvetica',
-        leading=13
-    ))
-    
-    styles.add(ParagraphStyle(
-        name='Footer',
-        parent=styles['Normal'],
-        fontSize=7,
-        textColor=colors.HexColor("#64748b"),
-        alignment=TA_CENTER,
-        fontName='Helvetica'
+        fontSize=10,
+        fontName='Helvetica-Bold',
+        alignment=TA_CENTER
     ))
     
     styles.add(ParagraphStyle(
         name='Legal',
         parent=styles['Normal'],
-        fontSize=6.5,
-        textColor=colors.HexColor("#94a3b8"),
+        fontSize=6,
+        textColor=colors.HexColor("#666666"),
         fontName='Helvetica',
-        leading=9,
-        alignment=TA_LEFT
+        alignment=TA_CENTER,
+        leading=8
     ))
     
     styles.add(ParagraphStyle(
-        name='Badge',
+        name='CheckText',
         parent=styles['Normal'],
-        fontSize=10,
-        textColor=colors.HexColor("#00ff99"),
+        fontSize=7,
+        textColor=colors.HexColor("#00cc66"),
         alignment=TA_CENTER,
         fontName='Helvetica-Bold'
     ))
@@ -123,7 +137,7 @@ def get_custom_styles():
     return styles
 
 
-# ========== GÉNÉRATION DU PDF ==========
+# ========== GÉNÉRATION DU PDF (1 PAGE) ==========
 
 def generate_eudr_pdf(
     audit_id,
@@ -147,8 +161,8 @@ def generate_eudr_pdf(
     file_path = f"/tmp/{audit_id}.pdf"
     doc = SimpleDocTemplate(
         file_path,
-        leftMargin=1.8*cm,
-        rightMargin=1.8*cm,
+        leftMargin=1.5*cm,
+        rightMargin=1.5*cm,
         topMargin=1.5*cm,
         bottomMargin=1.5*cm
     )
@@ -161,196 +175,201 @@ def generate_eudr_pdf(
     current_date = datetime.now().strftime("%d/%m/%Y à %H:%M")
     current_date_short = datetime.now().strftime("%d/%m/%Y")
     
-    # ==========================================
-    # PAGE 1 - PAGE DE GARDE + DÉTAILS
-    # ==========================================
-    
-    # En-tête avec date
-    content.append(Paragraph(
-        f'<font color="#64748b" size="7">Généré le {current_date}</font>',
-        styles["Footer"]
-    ))
-    content.append(Spacer(1, 0.5*cm))
-    
-    # Logo
-    logo = get_logo()
-    if logo:
-        try:
-            content.append(Image(logo, width=130, height=105))
-            content.append(Spacer(1, 0.3*cm))
-        except Exception as e:
-            print("❌ LOGO ERROR:", str(e))
-    
-    # Titre
-    content.append(Paragraph("TIERRAS DE MONTAÑA", styles["CustomTitle"]))
-    content.append(Paragraph("EUDR TRACEABILITY REPORT", styles["CustomHeading2"]))
-    content.append(Paragraph(
-        '<font color="#64748b" size="9">Règlement Européen (UE) 2023/1115</font>',
-        styles["Footer"]
-    ))
-    
-    content.append(Spacer(1, 0.5*cm))
-    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#2d3748")))
-    content.append(Spacer(1, 0.3*cm))
-    
-    # ===== STATUT ET SOURCE =====
-    status_data = [
-        ["📋 Audit ID", audit_id],
-        ["✅ EUDR Status", f'<font color="{status_color}">{eudr_compliant}</font>'],
-        ["📡 Data Source", source_label]
-    ]
-    
-    status_table = Table(status_data, colWidths=[3.5*cm, 8.5*cm])
-    status_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0f172a")),
-        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#1a2332")),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
-        ("ALIGN", (1, 0), (1, -1), "LEFT"),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    content.append(status_table)
-    
-    content.append(Spacer(1, 0.3*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
-    content.append(Spacer(1, 0.3*cm))
-    
-    # ===== DÉTAILS DE LA PARCELLE =====
-    details = [
-        ["🏷️ Farm", name],
-        ["🌍 Latitude", f"{lat:.6f}"],
-        ["🌍 Longitude", f"{lon:.6f}"],
-        ["🌳 Tree Cover", f"{tree_cover}%"],
-        ["📅 Loss Year", str(loss_year) if loss_year > 0 else "N/A"],
-        ["📊 Risk Score", str(risk_score)],
-        ["⚡ Risk Level", risk_level]
-    ]
-    
-    detail_table = Table(details, colWidths=[3.5*cm, 8.5*cm])
-    detail_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0f172a")),
-        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#1a2332")),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
-        ("ALIGN", (1, 0), (1, -1), "LEFT"),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    content.append(detail_table)
-    
-    content.append(Spacer(1, 0.3*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
-    
-    # ===== FOOTER PAGE 1 =====
-    content.append(Spacer(1, 0.2*cm))
-    content.append(Paragraph(
-        "🏢 Tierras de Montaña - Sarah Jo SAS • NIT: 900693208-2",
-        styles["Footer"]
-    ))
-    content.append(Paragraph(
-        f'Page 1/2 • {current_date_short}',
-        styles["Footer"]
-    ))
-    
-    content.append(PageBreak())
-    
-    # ==========================================
-    # PAGE 2 - VÉRIFICATION + MENTIONS LÉGALES
-    # ==========================================
-    
     signature = sign_audit(audit_id)
     verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     
-    # En-tête
-    content.append(Paragraph(
-        f'<font color="#64748b" size="7">{current_date}</font>',
-        styles["Footer"]
-    ))
-    content.append(Spacer(1, 0.3*cm))
-    
-    # ===== QR CODE + VÉRIFICATION =====
+    # ==========================================
+    # QR CODE en mémoire pour l'en-tête
+    # ==========================================
     qr_path = f"/tmp/{audit_id}_qr.png"
+    qr_image = None
     try:
         qr = qrcode.make(verify_url)
         qr.save(qr_path)
-        
-        # Titre vérification
-        content.append(Paragraph("🔐 VÉRIFICATION", styles["CustomTitle"]))
-        content.append(Spacer(1, 0.3*cm))
-        content.append(HRFlowable(width="80%", thickness=1, color=colors.HexColor("#00ff99")))
-        content.append(Spacer(1, 0.5*cm))
-        
-        # QR Code centré
-        qr_img = Image(qr_path, width=150, height=150)
-        content.append(qr_img)
-        content.append(Spacer(1, 0.3*cm))
-        
-        content.append(Paragraph(
-            f'<font color="#94a3b8" size="8">Scannez ce QR code pour vérifier le certificat</font>',
-            styles["Footer"]
-        ))
-        content.append(Spacer(1, 0.5*cm))
-        
+        qr_image = Image(qr_path, width=60, height=60)
+        print("✅ QR CODE GENERATED")
     except Exception as e:
         print("❌ QR ERROR:", str(e))
     
-    # ===== URL ET SHA256 =====
-    content.append(Paragraph(
-        f"<b>🔗 URL:</b> {verify_url}",
-        styles["CustomNormal"]
-    ))
-    content.append(Spacer(1, 0.1*cm))
-    content.append(Paragraph(
-        f"<b>🔐 SHA256:</b> {sha[:32]}...",
-        styles["CustomNormal"]
-    ))
+    # ==========================================
+    # EN-TÊTE : Logo à gauche + QR à droite
+    # ==========================================
     
+    # Logo
+    logo = get_logo()
+    logo_img = None
+    if logo:
+        try:
+            logo_img = Image(logo, width=90, height=73)
+        except Exception as e:
+            print("❌ LOGO ERROR:", str(e))
+    
+    # Construction de l'en-tête en tableau
+    header_data = []
+    
+    # Ligne 1 : Logo + QR
+    header_row = []
+    if logo_img:
+        header_row.append(logo_img)
+    else:
+        header_row.append(Paragraph("TIERRAS DE MONTAÑA", styles["Title"]))
+    
+    # Centre : titre
+    center_cell = Paragraph(
+        f'<font size="14" color="#000000"><b>EUDR TRACEABILITY REPORT</b></font>',
+        styles["HeaderText"]
+    )
+    header_row.append(center_cell)
+    
+    # Droite : QR
+    if qr_image:
+        qr_cell = qr_image
+    else:
+        qr_cell = Paragraph("QR", styles["HeaderText"])
+    header_row.append(qr_cell)
+    
+    header_data.append(header_row)
+    
+    # Ligne 2 : sous-titre + infos entreprise
+    header_data.append([
+        Paragraph("", styles["HeaderText"]),
+        Paragraph(
+            '<font size="8" color="#555555">Sarah Jo SAS • NIT: 900693208-2 • contact@tierrasdemontana.com</font>',
+            styles["HeaderText"]
+        ),
+        Paragraph(
+            f'<font size="7" color="#00cc66"><b>✓ Check with QR</b></font>',
+            styles["CheckText"]
+        )
+    ])
+    
+    header_table = Table(header_data, colWidths=[3*cm, 8*cm, 3*cm])
+    header_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    content.append(header_table)
+    
+    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd")))
     content.append(Spacer(1, 0.2*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
     
-    # ===== MENTIONS LÉGALES COMPACTES =====
-    legal_text = [
-        "⚖️ CADRE LÉGAL",
-        "• EUDR (UE) 2023/1115 • OCDE • ONU • OIT • UNCCD • CCNUCC",
-        "",
-        "🔒 PROTECTION DES DONNÉES (Loi 1581/2012 - RGPD UE 2016/679, Art.6)",
-        "",
-        "⚠️ CLAUSE DE NON-RESPONSABILITÉ",
-        "Ce rapport est généré à partir de données satellitaires. La précision",
-        "dépend des données sources. Tierras de Montaña n'est pas responsable",
-        "des décisions prises sur la base de ce rapport.",
-        "",
-        "📧 contact@tierrasdemontana.com"
+    # ==========================================
+    # STATUT + SOURCE
+    # ==========================================
+    status_data = [
+        ["Status", f'<font color="{status_color}"><b>{eudr_compliant}</b></font>'],
+        ["Source", source_label],
+        ["Date", current_date_short]
     ]
     
-    for line in legal_text:
-        if line == "":
-            content.append(Spacer(1, 0.1*cm))
-        elif line.startswith("⚖️") or line.startswith("🔒") or line.startswith("⚠️"):
-            content.append(Paragraph(f'<font color="#00ff99"><b>{line}</b></font>', styles["CustomNormal"]))
-        elif line.startswith("•"):
-            content.append(Paragraph(f'<font color="#94a3b8">{line}</font>', styles["Legal"]))
-        elif line.startswith("📧"):
-            content.append(Paragraph(f'<font color="#00ff99">{line}</font>', styles["CustomNormal"]))
-        else:
-            content.append(Paragraph(f'<font color="#94a3b8">{line}</font>', styles["Legal"]))
-    
-    # ===== FOOTER PAGE 2 =====
+    status_table = Table(status_data, colWidths=[2.5*cm, 4*cm, 2.5*cm])
+    status_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f5f5")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    content.append(status_table)
     content.append(Spacer(1, 0.2*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
+    
+    # ==========================================
+    # DÉTAILS DE LA PARCELLE
+    # ==========================================
+    details = [
+        ["Farm", name],
+        ["Latitude", f"{lat:.6f}"],
+        ["Longitude", f"{lon:.6f}"],
+        ["Tree Cover", f"{tree_cover}%"],
+        ["Loss Year", str(loss_year) if loss_year > 0 else "N/A"],
+        ["Risk Score", str(risk_score)],
+        ["Risk Level", risk_level]
+    ]
+    
+    detail_table = Table(details, colWidths=[2.5*cm, 3*cm, 2.5*cm, 3*cm])
+    detail_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fafafa")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "LEFT"),
+        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
+        ("ALIGN", (3, 0), (3, -1), "LEFT"),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    content.append(detail_table)
+    
+    content.append(Spacer(1, 0.2*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
+    content.append(Spacer(1, 0.1*cm))
+    
+    # ==========================================
+    # LÉGENDE DES RISQUES
+    # ==========================================
+    legend_data = [
+        ["🟢 Faible (0-30)", "🟡 Moyen (31-70)", "🔴 Élevé (71-100)"]
+    ]
+    legend_table = Table(legend_data, colWidths=[5*cm, 5*cm, 5*cm])
+    legend_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    content.append(legend_table)
+    
+    content.append(Spacer(1, 0.2*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
+    content.append(Spacer(1, 0.1*cm))
+    
+    # ==========================================
+    # VERIFICATION : URL + SHA256
+    # ==========================================
     content.append(Paragraph(
-        f'Page 2/2 • {current_date_short}',
-        styles["Footer"]
+        f'<font size="7"><b>🔗 Verify:</b> {verify_url}</font>',
+        styles["HeaderText"]
+    ))
+    content.append(Spacer(1, 0.05*cm))
+    content.append(Paragraph(
+        f'<font size="7"><b>🔐 SHA256:</b> {sha}</font>',
+        styles["HeaderText"]
+    ))
+    
+    content.append(Spacer(1, 0.1*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
+    content.append(Spacer(1, 0.1*cm))
+    
+    # ==========================================
+    # MENTIONS LÉGALES (compactes)
+    # ==========================================
+    legal_text = (
+        "⚖️ EUDR (UE) 2023/1115 • OCDE • ONU • OIT • UNCCD • CCNUCC • "
+        "🔒 Loi 1581/2012 • RGPD UE 2016/679, Art.6 • "
+        "⚠️ Rapport généré à partir de données satellitaires - "
+        "Tierras de Montaña n'est pas responsable des décisions prises sur la base de ce rapport"
+    )
+    content.append(Paragraph(
+        f'<font size="5" color="#666666">{legal_text}</font>',
+        styles["Legal"]
+    ))
+    
+    content.append(Spacer(1, 0.05*cm))
+    content.append(Paragraph(
+        f'<font size="5" color="#888888">Généré le {current_date} • Audit ID: {audit_id} • Page 1/1</font>',
+        styles["Legal"]
     ))
     
     # ==========================================
