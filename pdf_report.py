@@ -26,7 +26,7 @@ BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
 
 
-# ========== FONCTIONS UTILITAIRES ==========
+# ========== UTILITY FUNCTIONS ==========
 
 def get_logo():
     path = "/tmp/tdm_logo.png"
@@ -58,31 +58,26 @@ def get_status_color(status):
     return "#00cc66" if status == "COMPLIANT" else "#ff3333"
 
 
-# ========== STYLES PERSONNALISÉS ==========
+# ========== CUSTOM STYLES ==========
 
 def get_custom_styles():
     styles = getSampleStyleSheet()
     
-    styles.add(ParagraphStyle(
-        name='Title',
-        parent=styles['Normal'],
-        fontSize=18,
-        textColor=colors.HexColor("#000000"),
-        alignment=TA_CENTER,
-        fontName='Helvetica-Bold',
-        spaceAfter=4
-    ))
+    # Modify existing 'Title' style
+    styles['Title'].fontSize = 18
+    styles['Title'].textColor = colors.HexColor("#000000")
+    styles['Title'].alignment = TA_CENTER
+    styles['Title'].fontName = 'Helvetica-Bold'
+    styles['Title'].spaceAfter = 4
     
-    styles.add(ParagraphStyle(
-        name='SubTitle',
-        parent=styles['Normal'],
-        fontSize=10,
-        textColor=colors.HexColor("#555555"),
-        alignment=TA_CENTER,
-        fontName='Helvetica',
-        spaceAfter=8
-    ))
+    # Modify existing 'SubTitle' style
+    styles['SubTitle'].fontSize = 10
+    styles['SubTitle'].textColor = colors.HexColor("#555555")
+    styles['SubTitle'].alignment = TA_CENTER
+    styles['SubTitle'].fontName = 'Helvetica'
+    styles['SubTitle'].spaceAfter = 8
     
+    # Add new custom styles
     styles.add(ParagraphStyle(
         name='HeaderText',
         parent=styles['Normal'],
@@ -90,7 +85,6 @@ def get_custom_styles():
         textColor=colors.HexColor("#333333"),
         fontName='Helvetica'
     ))
-    
     styles.add(ParagraphStyle(
         name='Label',
         parent=styles['Normal'],
@@ -98,7 +92,6 @@ def get_custom_styles():
         textColor=colors.HexColor("#555555"),
         fontName='Helvetica-Bold'
     ))
-    
     styles.add(ParagraphStyle(
         name='Value',
         parent=styles['Normal'],
@@ -106,7 +99,6 @@ def get_custom_styles():
         textColor=colors.HexColor("#000000"),
         fontName='Helvetica'
     ))
-    
     styles.add(ParagraphStyle(
         name='Status',
         parent=styles['Normal'],
@@ -114,7 +106,6 @@ def get_custom_styles():
         fontName='Helvetica-Bold',
         alignment=TA_CENTER
     ))
-    
     styles.add(ParagraphStyle(
         name='Legal',
         parent=styles['Normal'],
@@ -124,7 +115,6 @@ def get_custom_styles():
         alignment=TA_CENTER,
         leading=8
     ))
-    
     styles.add(ParagraphStyle(
         name='CheckText',
         parent=styles['Normal'],
@@ -137,7 +127,7 @@ def get_custom_styles():
     return styles
 
 
-# ========== GÉNÉRATION DU PDF (1 PAGE) ==========
+# ========== PDF GENERATION (1 PAGE) ==========
 
 def generate_eudr_pdf(
     audit_id,
@@ -172,7 +162,7 @@ def generate_eudr_pdf(
     
     source_label = get_source_label(source)
     status_color = get_status_color(eudr_compliant)
-    current_date = datetime.now().strftime("%d/%m/%Y à %H:%M")
+    current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
     current_date_short = datetime.now().strftime("%d/%m/%Y")
     
     signature = sign_audit(audit_id)
@@ -180,7 +170,7 @@ def generate_eudr_pdf(
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     
     # ==========================================
-    # QR CODE en mémoire pour l'en-tête
+    # QR CODE
     # ==========================================
     qr_path = f"/tmp/{audit_id}_qr.png"
     qr_image = None
@@ -193,10 +183,9 @@ def generate_eudr_pdf(
         print("❌ QR ERROR:", str(e))
     
     # ==========================================
-    # EN-TÊTE : Logo à gauche + QR à droite
+    # HEADER: Logo left + QR right
     # ==========================================
     
-    # Logo
     logo = get_logo()
     logo_img = None
     if logo:
@@ -205,24 +194,21 @@ def generate_eudr_pdf(
         except Exception as e:
             print("❌ LOGO ERROR:", str(e))
     
-    # Construction de l'en-tête en tableau
     header_data = []
     
-    # Ligne 1 : Logo + QR
+    # Row 1: Logo + Title + QR
     header_row = []
     if logo_img:
         header_row.append(logo_img)
     else:
         header_row.append(Paragraph("TIERRAS DE MONTAÑA", styles["Title"]))
     
-    # Centre : titre
     center_cell = Paragraph(
         f'<font size="14" color="#000000"><b>EUDR TRACEABILITY REPORT</b></font>',
         styles["HeaderText"]
     )
     header_row.append(center_cell)
     
-    # Droite : QR
     if qr_image:
         qr_cell = qr_image
     else:
@@ -231,7 +217,7 @@ def generate_eudr_pdf(
     
     header_data.append(header_row)
     
-    # Ligne 2 : sous-titre + infos entreprise
+    # Row 2: Company info
     header_data.append([
         Paragraph("", styles["HeaderText"]),
         Paragraph(
@@ -259,7 +245,7 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.2*cm))
     
     # ==========================================
-    # STATUT + SOURCE
+    # STATUS + SOURCE
     # ==========================================
     status_data = [
         ["Status", f'<font color="{status_color}"><b>{eudr_compliant}</b></font>'],
@@ -281,7 +267,7 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.2*cm))
     
     # ==========================================
-    # DÉTAILS DE LA PARCELLE
+    # FARM DETAILS
     # ==========================================
     details = [
         ["Farm", name],
@@ -316,10 +302,10 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ==========================================
-    # LÉGENDE DES RISQUES
+    # RISK LEGEND
     # ==========================================
     legend_data = [
-        ["🟢 Faible (0-30)", "🟡 Moyen (31-70)", "🔴 Élevé (71-100)"]
+        ["🟢 Low (0-30)", "🟡 Medium (31-70)", "🔴 High (71-100)"]
     ]
     legend_table = Table(legend_data, colWidths=[5*cm, 5*cm, 5*cm])
     legend_table.setStyle(TableStyle([
@@ -336,7 +322,7 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ==========================================
-    # VERIFICATION : URL + SHA256
+    # VERIFICATION: URL + SHA256
     # ==========================================
     content.append(Paragraph(
         f'<font size="7"><b>🔗 Verify:</b> {verify_url}</font>',
@@ -353,34 +339,37 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ==========================================
-    # MENTIONS LÉGALES (compactes)
+    # LEGAL NOTICES (compact, multi-line)
     # ==========================================
-    legal_text = (
-        "⚖️ EUDR (UE) 2023/1115 • OCDE • ONU • OIT • UNCCD • CCNUCC • "
-        "🔒 Loi 1581/2012 • RGPD UE 2016/679, Art.6 • "
-        "⚠️ Rapport généré à partir de données satellitaires - "
-        "Tierras de Montaña n'est pas responsable des décisions prises sur la base de ce rapport"
-    )
-    content.append(Paragraph(
-        f'<font size="5" color="#666666">{legal_text}</font>',
-        styles["Legal"]
-    ))
+    legal_lines = [
+        "⚖️ EUDR (EU) 2023/1115 • OECD • UN • ILO • UNCCD • UNFCCC",
+        "🔒 Law 1581/2012 • GDPR EU 2016/679, Art.6",
+        "⚠️ Report generated from satellite data -",
+        "Tierras de Montaña is not responsible for decisions made based on this report."
+    ]
+    
+    for line in legal_lines:
+        content.append(Paragraph(
+            f'<font size="5" color="#666666">{line}</font>',
+            styles["Legal"]
+        ))
+        content.append(Spacer(1, 0.05*cm))
     
     content.append(Spacer(1, 0.05*cm))
     content.append(Paragraph(
-        f'<font size="5" color="#888888">Généré le {current_date} • Audit ID: {audit_id} • Page 1/1</font>',
+        f'<font size="5" color="#888888">Generated on {current_date} • Audit ID: {audit_id} • Page 1/1</font>',
         styles["Legal"]
     ))
     
     # ==========================================
-    # GÉNÉRATION
+    # BUILD PDF
     # ==========================================
     
     print("📄 BUILDING PDF...")
     doc.build(content)
     print("✅ PDF BUILT")
     
-    # Nettoyage
+    # Cleanup
     try:
         if os.path.exists(qr_path):
             os.remove(qr_path)
