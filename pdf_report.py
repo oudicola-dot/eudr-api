@@ -2,6 +2,7 @@ import os
 import hashlib
 import qrcode
 import requests
+from datetime import datetime
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -10,53 +11,119 @@ from reportlab.platypus import (
     Image,
     Table,
     TableStyle,
-    PageBreak
+    PageBreak,
+    HRFlowable
 )
 
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportlab.lib.units import cm, mm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 from security import sign_audit
 
-BASE_URL = os.getenv(
-    "BASE_URL",
-    "https://eudr-api-mi0x.onrender.com"
-)
-
+BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
 
 
+# ========== FONCTIONS UTILITAIRES ==========
+
 def get_logo():
     path = "/tmp/tdm_logo.png"
-
     if not os.path.exists(path):
         try:
-            print("DOWNLOADING LOGO...")
+            print("📥 DOWNLOADING LOGO...")
             r = requests.get(LOGO_URL, timeout=8)
             r.raise_for_status()
-
             with open(path, "wb") as f:
                 f.write(r.content)
-
-            print("LOGO SAVED:", path)
-
+            print("✅ LOGO SAVED:", path)
         except Exception as e:
-            print("LOGO DOWNLOAD ERROR:", str(e))
+            print("❌ LOGO DOWNLOAD ERROR:", str(e))
             return None
-
     return path
 
 
 def get_source_label(source):
-    """Convertit le code source en label lisible"""
     labels = {
-        "ee": "🌍 Earth Engine",
+        "ee": "🌍 Earth Engine (Google)",
         "gfw": "🛰️ GFW (Global Forest Watch)",
-        "fallback": "⚠️ Simulation (Fallback)",
+        "fallback": "⚠️ Simulation",
         "unknown": "❓ Unknown"
     }
     return labels.get(source, f"📡 {source}")
 
+
+def get_status_color(status):
+    return "#00ff99" if status == "COMPLIANT" else "#ff4444"
+
+
+# ========== STYLES PERSONNALISÉS ==========
+
+def get_custom_styles():
+    styles = getSampleStyleSheet()
+    
+    styles.add(ParagraphStyle(
+        name='CustomTitle',
+        parent=styles['Title'],
+        fontSize=22,
+        textColor=colors.HexColor("#00ff99"),
+        alignment=TA_CENTER,
+        spaceAfter=4,
+        fontName='Helvetica-Bold'
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='CustomHeading2',
+        parent=styles['Heading2'],
+        fontSize=12,
+        textColor=colors.HexColor("#a0aec0"),
+        alignment=TA_CENTER,
+        spaceAfter=10,
+        fontName='Helvetica'
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='CustomNormal',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.HexColor("#e2e8f0"),
+        fontName='Helvetica',
+        leading=13
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='Footer',
+        parent=styles['Normal'],
+        fontSize=7,
+        textColor=colors.HexColor("#64748b"),
+        alignment=TA_CENTER,
+        fontName='Helvetica'
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='Legal',
+        parent=styles['Normal'],
+        fontSize=6.5,
+        textColor=colors.HexColor("#94a3b8"),
+        fontName='Helvetica',
+        leading=9,
+        alignment=TA_LEFT
+    ))
+    
+    styles.add(ParagraphStyle(
+        name='Badge',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor("#00ff99"),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    ))
+    
+    return styles
+
+
+# ========== GÉNÉRATION DU PDF ==========
 
 def generate_eudr_pdf(
     audit_id,
@@ -68,220 +135,250 @@ def generate_eudr_pdf(
     eudr_compliant,
     tree_cover,
     loss_year,
-    source="unknown"  # ← NOUVEAU PARAMÈTRE avec valeur par défaut
+    source="unknown"
 ):
-    print("================================")
-    print("PDF GENERATION START")
-    print("AUDIT:", audit_id)
-    print("FARM:", name)
-    print("SOURCE:", source)
-    print("================================")
+    print("=" * 40)
+    print("📄 PDF GENERATION START")
+    print(f"📌 AUDIT: {audit_id}")
+    print(f"🏷️ FARM: {name}")
+    print(f"📡 SOURCE: {source}")
+    print("=" * 40)
 
     file_path = f"/tmp/{audit_id}.pdf"
-    print("TARGET FILE:", file_path)
-
-    doc = SimpleDocTemplate(file_path)
-    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(
+        file_path,
+        leftMargin=1.8*cm,
+        rightMargin=1.8*cm,
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
+    )
+    
+    styles = get_custom_styles()
     content = []
-
-    # ===== PAGE DE GARDE =====
-    content.append(Spacer(1, 40))
-
-    content.append(
-        Paragraph(
-            "<b>TIERRAS DE MONTAÑA</b>",
-            styles["Title"]
-        )
-    )
-
-    content.append(
-        Paragraph(
-            "EUDR TRACEABILITY REPORT",
-            styles["Heading2"]
-        )
-    )
-
-    content.append(Spacer(1, 20))
-
+    
+    source_label = get_source_label(source)
+    status_color = get_status_color(eudr_compliant)
+    current_date = datetime.now().strftime("%d/%m/%Y à %H:%M")
+    current_date_short = datetime.now().strftime("%d/%m/%Y")
+    
+    # ==========================================
+    # PAGE 1 - PAGE DE GARDE + DÉTAILS
+    # ==========================================
+    
+    # En-tête avec date
+    content.append(Paragraph(
+        f'<font color="#64748b" size="7">Généré le {current_date}</font>',
+        styles["Footer"]
+    ))
+    content.append(Spacer(1, 0.5*cm))
+    
     # Logo
     logo = get_logo()
-    print("LOGO PATH:", logo)
-
     if logo:
         try:
-            content.append(
-                Image(
-                    logo,
-                    width=150,
-                    height=121
-                )
-            )
-            print("LOGO LOADED")
+            content.append(Image(logo, width=130, height=105))
+            content.append(Spacer(1, 0.3*cm))
         except Exception as e:
-            print("LOGO ERROR:", str(e))
-
-    content.append(Spacer(1, 25))
-
-    # Audit ID et Status
-    content.append(
-        Paragraph(
-            f"<b>Audit ID:</b> {audit_id}",
-            styles["Normal"]
-        )
-    )
-
-    # ✅ Statut avec couleur
-    status_color = "#00ff99" if eudr_compliant == "COMPLIANT" else "#ff4444"
-    content.append(
-        Paragraph(
-            f'<b>EUDR Status:</b> <font color="{status_color}">{eudr_compliant}</font>',
-            styles["Normal"]
-        )
-    )
-
-    # ✅ Ajout de la Data Source sur la page de garde
-    source_label = get_source_label(source)
-    content.append(
-        Paragraph(
-            f"<b>Data Source:</b> {source_label}",
-            styles["Normal"]
-        )
-    )
-
-    content.append(PageBreak())
-
-    # ===== PAGE DÉTAILLÉE =====
-    signature = sign_audit(audit_id)
-
-    verify_url = (
-        f"{BASE_URL}/eudr/verify/"
-        f"{audit_id}?signature={signature}"
-    )
-
-    print("VERIFY URL:", verify_url)
-
-    # QR Code
-    qr = qrcode.make(verify_url)
-    qr_path = f"/tmp/{audit_id}_qr.png"
-    qr.save(qr_path)
-    print("QR SAVED:", qr_path)
-
-    # SHA256
-    sha = hashlib.sha256(
-        f"{audit_id}{name}{lat}{lon}".encode()
-    ).hexdigest()
-
-    content.append(
-        Paragraph(
-            "EXECUTIVE SUMMARY",
-            styles["Heading1"]
-        )
-    )
-
-    content.append(Spacer(1, 10))
-
-    # Informations détaillées
-    details = [
-        ["Farm", name],
-        ["Latitude", f"{lat:.6f}"],
-        ["Longitude", f"{lon:.6f}"],
-        ["Tree Cover", f"{tree_cover}%"],
-        ["Loss Year", str(loss_year) if loss_year > 0 else "N/A"],
-        ["Data Source", source_label],  # ✅ Ajouté ici aussi
-        ["Risk Score", str(risk_score)],
-        ["Risk Level", risk_level],
-        ["EUDR Status", eudr_compliant],
-        ["Issuer", "Tierras de Montaña"]
-    ]
-
-    # Tableau stylisé
-    table_data = [[Paragraph(f"<b>{k}</b>", styles["Normal"]), v] for k, v in details]
-    table = Table(table_data, colWidths=[150, 300])
+            print("❌ LOGO ERROR:", str(e))
     
-    table.setStyle(TableStyle([
-        # En-tête
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#1a2332")),
-        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#0f172a")),
+    # Titre
+    content.append(Paragraph("TIERRAS DE MONTAÑA", styles["CustomTitle"]))
+    content.append(Paragraph("EUDR TRACEABILITY REPORT", styles["CustomHeading2"]))
+    content.append(Paragraph(
+        '<font color="#64748b" size="9">Règlement Européen (UE) 2023/1115</font>',
+        styles["Footer"]
+    ))
+    
+    content.append(Spacer(1, 0.5*cm))
+    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#2d3748")))
+    content.append(Spacer(1, 0.3*cm))
+    
+    # ===== STATUT ET SOURCE =====
+    status_data = [
+        ["📋 Audit ID", audit_id],
+        ["✅ EUDR Status", f'<font color="{status_color}">{eudr_compliant}</font>'],
+        ["📡 Data Source", source_label]
+    ]
+    
+    status_table = Table(status_data, colWidths=[3.5*cm, 8.5*cm])
+    status_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0f172a")),
+        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#1a2332")),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
         ("ALIGN", (0, 0), (0, -1), "RIGHT"),
         ("ALIGN", (1, 0), (1, -1), "LEFT"),
         ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        # Gris clair pour les lignes paires
-        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#1a2332")),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
     ]))
-
-    content.append(table)
-
-    content.append(Spacer(1, 25))
-
-    # ===== PAGE DE VÉRIFICATION =====
-    content.append(
-        Paragraph(
-            "VERIFY CERTIFICATE",
-            styles["Heading1"]
-        )
-    )
-
-    content.append(Spacer(1, 10))
-
-    # QR Code
-    try:
-        content.append(
-            Image(
-                qr_path,
-                width=150,
-                height=150
-            )
-        )
-        print("QR IMAGE LOADED")
-    except Exception as e:
-        print("QR IMAGE ERROR:", str(e))
-
-    content.append(Spacer(1, 10))
-
-    content.append(
-        Paragraph(
-            f"<b>Verification URL:</b> {verify_url}",
-            styles["Normal"]
-        )
-    )
-
-    content.append(Spacer(1, 15))
-
-    content.append(
-        Paragraph(
-            f"<b>SHA256:</b> {sha}",
-            styles["Normal"]
-        )
-    )
-
-    # ✅ Ajout d'un badge Data Source
-    content.append(Spacer(1, 20))
+    content.append(status_table)
     
-    source_badge = f"📊 Data Source: {source_label}"
-    content.append(
-        Paragraph(
-            f'<font color="#00ff99"><b>{source_badge}</b></font>',
-            styles["Normal"]
-        )
-    )
-
-    # ===== GÉNÉRATION =====
-    print("BUILDING PDF...")
+    content.append(Spacer(1, 0.3*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
+    content.append(Spacer(1, 0.3*cm))
+    
+    # ===== DÉTAILS DE LA PARCELLE =====
+    details = [
+        ["🏷️ Farm", name],
+        ["🌍 Latitude", f"{lat:.6f}"],
+        ["🌍 Longitude", f"{lon:.6f}"],
+        ["🌳 Tree Cover", f"{tree_cover}%"],
+        ["📅 Loss Year", str(loss_year) if loss_year > 0 else "N/A"],
+        ["📊 Risk Score", str(risk_score)],
+        ["⚡ Risk Level", risk_level]
+    ]
+    
+    detail_table = Table(details, colWidths=[3.5*cm, 8.5*cm])
+    detail_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0f172a")),
+        ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#1a2332")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "LEFT"),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    content.append(detail_table)
+    
+    content.append(Spacer(1, 0.3*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
+    
+    # ===== FOOTER PAGE 1 =====
+    content.append(Spacer(1, 0.2*cm))
+    content.append(Paragraph(
+        "🏢 Tierras de Montaña - Sarah Jo SAS • NIT: 900693208-2",
+        styles["Footer"]
+    ))
+    content.append(Paragraph(
+        f'Page 1/2 • {current_date_short}',
+        styles["Footer"]
+    ))
+    
+    content.append(PageBreak())
+    
+    # ==========================================
+    # PAGE 2 - VÉRIFICATION + MENTIONS LÉGALES
+    # ==========================================
+    
+    signature = sign_audit(audit_id)
+    verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
+    sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
+    
+    # En-tête
+    content.append(Paragraph(
+        f'<font color="#64748b" size="7">{current_date}</font>',
+        styles["Footer"]
+    ))
+    content.append(Spacer(1, 0.3*cm))
+    
+    # ===== QR CODE + VÉRIFICATION =====
+    qr_path = f"/tmp/{audit_id}_qr.png"
+    try:
+        qr = qrcode.make(verify_url)
+        qr.save(qr_path)
+        
+        # Tableau QR + infos
+        qr_data = [
+            ["🔐 VÉRIFICATION", ""],
+            ["", ""],
+            ["QR Code", f'<font color="#94a3b8" size="8">Scannez pour vérifier</font>']
+        ]
+        
+        qr_table = Table(qr_data, colWidths=[5*cm, 7*cm])
+        qr_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a2332")),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        
+        # Insérer l'image dans la cellule
+        qr_img = Image(qr_path, width=120, height=120)
+        qr_table._cells[(1, 2)] = qr_img
+        
+        content.append(qr_table)
+        content.append(Spacer(1, 0.2*cm))
+        
+    except Exception as e:
+        print("❌ QR ERROR:", str(e))
+    
+    # ===== URL ET SHA256 =====
+    content.append(Paragraph(
+        f"<b>🔗 URL:</b> {verify_url}",
+        styles["CustomNormal"]
+    ))
+    content.append(Spacer(1, 0.1*cm))
+    content.append(Paragraph(
+        f"<b>🔐 SHA256:</b> {sha[:32]}...",
+        styles["CustomNormal"]
+    ))
+    
+    content.append(Spacer(1, 0.2*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
+    
+    # ===== MENTIONS LÉGALES COMPACTES =====
+    legal_text = [
+        "⚖️ CADRE LÉGAL",
+        "• EUDR (UE) 2023/1115 • OCDE • ONU • OIT • UNCCD • CCNUCC",
+        "",
+        "🔒 PROTECTION DES DONNÉES (Loi 1581/2012 - RGPD UE 2016/679, Art.6)",
+        "",
+        "⚠️ CLAUSE DE NON-RESPONSABILITÉ",
+        "Ce rapport est généré à partir de données satellitaires. La précision",
+        "dépend des données sources. Tierras de Montaña n'est pas responsable",
+        "des décisions prises sur la base de ce rapport.",
+        "",
+        "📧 contact@tierrasdemontana.com"
+    ]
+    
+    for line in legal_text:
+        if line == "":
+            content.append(Spacer(1, 0.1*cm))
+        elif line.startswith("⚖️") or line.startswith("🔒") or line.startswith("⚠️"):
+            content.append(Paragraph(f'<font color="#00ff99"><b>{line}</b></font>', styles["CustomNormal"]))
+        elif line.startswith("•"):
+            content.append(Paragraph(f'<font color="#94a3b8">{line}</font>', styles["Legal"]))
+        elif line.startswith("📧"):
+            content.append(Paragraph(f'<font color="#00ff99">{line}</font>', styles["CustomNormal"]))
+        else:
+            content.append(Paragraph(f'<font color="#94a3b8">{line}</font>', styles["Legal"]))
+    
+    # ===== FOOTER PAGE 2 =====
+    content.append(Spacer(1, 0.2*cm))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#2d3748")))
+    content.append(Paragraph(
+        f'Page 2/2 • {current_date_short}',
+        styles["Footer"]
+    ))
+    
+    # ==========================================
+    # GÉNÉRATION
+    # ==========================================
+    
+    print("📄 BUILDING PDF...")
     doc.build(content)
-    print("PDF BUILT")
-
-    print("FILE EXISTS:", os.path.exists(file_path))
-
+    print("✅ PDF BUILT")
+    
     # Nettoyage
     try:
-        os.remove(qr_path)
-        print("QR CLEANED")
+        if os.path.exists(qr_path):
+            os.remove(qr_path)
+            print("🧹 QR CLEANED")
     except Exception as e:
-        print("QR CLEANUP ERROR:", str(e))
-
-    print("PDF RETURN:", file_path)
+        print("⚠️ QR CLEANUP ERROR:", str(e))
+    
+    print(f"📁 PDF RETURN: {file_path}")
     return file_path
