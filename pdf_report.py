@@ -59,14 +59,14 @@ def get_status_color(status):
 def get_custom_styles():
     styles = getSampleStyleSheet()
     
-    # Modify existing 'Title' style
+    # Titre principal (utilisé pour "TIERRAS DE MONTAÑA" si logo absent)
     styles['Title'].fontSize = 18
     styles['Title'].textColor = colors.HexColor("#000000")
     styles['Title'].alignment = TA_CENTER
     styles['Title'].fontName = 'Helvetica-Bold'
     styles['Title'].spaceAfter = 4
-    
-    # Create 'SubTitle' style
+
+    # Sous-titre (pas utilisé ici, mais conservé pour compatibilité)
     styles.add(ParagraphStyle(
         name='SubTitle',
         parent=styles['Normal'],
@@ -76,8 +76,8 @@ def get_custom_styles():
         fontName='Helvetica',
         spaceAfter=8
     ))
-    
-    # Other styles
+
+    # Styles uniformisés
     styles.add(ParagraphStyle(
         name='HeaderText',
         parent=styles['Normal'],
@@ -88,14 +88,14 @@ def get_custom_styles():
     styles.add(ParagraphStyle(
         name='Label',
         parent=styles['Normal'],
-        fontSize=8,
+        fontSize=9,
         textColor=colors.HexColor("#555555"),
         fontName='Helvetica-Bold'
     ))
     styles.add(ParagraphStyle(
         name='Value',
         parent=styles['Normal'],
-        fontSize=8,
+        fontSize=9,
         textColor=colors.HexColor("#000000"),
         fontName='Helvetica'
     ))
@@ -205,7 +205,17 @@ def generate_eudr_pdf(
         except Exception as e:
             print("❌ LOGO ERROR:", str(e))
     
-    header_data = []
+    # Calcul des largeurs : on laisse le plus de place au centre
+    header_cols = [3*cm, doc.width - 6*cm - 0.5*cm, 2.5*cm]  # ajusté pour laisser de l'air
+    # La largeur du document est doc.width (page width - margins)
+    # On fixe les colonnes de gauche et droite, le reste pour le centre
+    # Afin d'éviter les coupures, on peut forcer la colonne centrale à être un peu plus large
+    # On va utiliser un ratio : gauche 20%, centre 60%, droite 20%
+    total = doc.width
+    col_left = total * 0.20
+    col_center = total * 0.60
+    col_right = total * 0.20
+    header_cols = [col_left, col_center, col_right]
     
     # Row 1: Logo, Title, QR
     row1 = []
@@ -224,18 +234,15 @@ def generate_eudr_pdf(
     else:
         row1.append(Paragraph("QR", styles["HeaderText"]))
     
-    header_data.append(row1)
+    header_data = [row1]
     
-    # Row 2: Company info (left), date (center), "Check with QR" (right)
+    # Row 2: Company info (left) et "Check with QR" (right) - sans date
     row2 = [
         Paragraph(
             'Sarah Jo SAS • NIT: 900693208-2 • contact@tierrasdemontana.com',
             styles["CompanyInfo"]
         ),
-        Paragraph(
-            f'{current_date_short}',
-            styles["CompanyInfo"]
-        ),
+        Paragraph("", styles["CompanyInfo"]),  # cellule centrale vide
         Paragraph(
             f'<font size="7" color="#00cc66"><b>✓ Check with QR</b></font>',
             styles["CheckText"]
@@ -243,7 +250,7 @@ def generate_eudr_pdf(
     ]
     header_data.append(row2)
     
-    header_table = Table(header_data, colWidths=[3*cm, 8*cm, 3*cm])
+    header_table = Table(header_data, colWidths=header_cols)
     header_table.setStyle(TableStyle([
         ("ALIGN", (0, 0), (0, -1), "LEFT"),
         ("ALIGN", (1, 0), (1, -1), "CENTER"),
@@ -267,7 +274,9 @@ def generate_eudr_pdf(
             Paragraph(current_date_short, styles["Value"])
         ]
     ]
-    status_table = Table(status_data, colWidths=[1.8*cm, 2.8*cm, 1.8*cm, 3.5*cm, 1.5*cm, 2.2*cm])
+    # Largeurs adaptées pour que chaque groupe tienne
+    status_cols = [1.8*cm, 2.8*cm, 1.8*cm, 3.5*cm, 1.5*cm, 2.2*cm]
+    status_table = Table(status_data, colWidths=status_cols)
     status_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f5f5")),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
@@ -280,47 +289,39 @@ def generate_eudr_pdf(
     content.append(status_table)
     content.append(Spacer(1, 0.2*cm))
     
-    # ---------- FARM DETAILS ----------
+    # ---------- FARM DETAILS (tableau 2 colonnes) ----------
     details = [
-        ["Farm", name],
-        ["Latitude", f"{lat:.6f}"],
-        ["Longitude", f"{lon:.6f}"],
-        ["Tree Cover", f"{tree_cover}%"],
-        ["Loss Year", str(loss_year) if loss_year > 0 else "N/A"],
-        ["Risk Score", str(risk_score)],
-        ["Risk Level", risk_level]
+        ("Farm", name),
+        ("Latitude", f"{lat:.6f}"),
+        ("Longitude", f"{lon:.6f}"),
+        ("Tree Cover", f"{tree_cover}%"),
+        ("Loss Year", str(loss_year) if loss_year > 0 else "N/A"),
+        ("Risk Score", str(risk_score)),
+        ("Risk Level", risk_level)
     ]
     detail_rows = []
     for label, value in details:
+        # On crée une ligne avec deux cellules : label (bold) et value (normal)
         detail_rows.append([
             Paragraph(f'<b>{label}</b>', styles["Label"]),
             Paragraph(str(value), styles["Value"])
         ])
-    flat_details = []
-    for row in detail_rows:
-        flat_details.extend(row)
-    table_data = []
-    for i in range(0, len(flat_details), 4):
-        row = flat_details[i:i+4]
-        while len(row) < 4:
-            row.append(Paragraph("", styles["Normal"]))
-        table_data.append(row)
     
-    detail_table = Table(table_data, colWidths=[2.5*cm, 3*cm, 2.5*cm, 3*cm])
+    # Largeurs : 30% pour la colonne label, 70% pour la valeur (pour que le texte long tienne)
+    detail_cols = [doc.width * 0.30, doc.width * 0.70]
+    detail_table = Table(detail_rows, colWidths=detail_cols)
     detail_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fafafa")),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
         ("ALIGN", (0, 0), (0, -1), "RIGHT"),
         ("ALIGN", (1, 0), (1, -1), "LEFT"),
-        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
-        ("ALIGN", (3, 0), (3, -1), "LEFT"),
         ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
     ]))
     content.append(detail_table)
     content.append(Spacer(1, 0.2*cm))
@@ -335,7 +336,8 @@ def generate_eudr_pdf(
             Paragraph('<font color="#dc3545">●</font> High (71-100)', styles["HeaderText"])
         ]
     ]
-    legend_table = Table(legend_data, colWidths=[5*cm, 5*cm, 5*cm])
+    legend_cols = [doc.width / 3.0] * 3
+    legend_table = Table(legend_data, colWidths=legend_cols)
     legend_table.setStyle(TableStyle([
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("FONTSIZE", (0, 0), (-1, -1), 7),
@@ -356,16 +358,21 @@ def generate_eudr_pdf(
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
     content.append(Spacer(1, 0.1*cm))
     
-    # ---------- VERIFICATION (simple lines, no black box) ----------
-    content.append(Paragraph(
-        f'<b>Verify:</b> {verify_url}',
-        styles["VerifyText"]
-    ))
-    content.append(Spacer(1, 0.05*cm))
-    content.append(Paragraph(
-        f'<b>SHA256:</b> {sha}',
-        styles["VerifyText"]
-    ))
+    # ---------- VERIFICATION (une colonne pleine largeur) ----------
+    verify_cols = [doc.width]
+    verify_data = [
+        [Paragraph(f'<b>Verify:</b> {verify_url}', styles["VerifyText"])],
+        [Paragraph(f'<b>SHA256:</b> {sha}', styles["VerifyText"])]
+    ]
+    verify_table = Table(verify_data, colWidths=verify_cols)
+    verify_table.setStyle(TableStyle([
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    content.append(verify_table)
     content.append(Spacer(1, 0.1*cm))
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
     content.append(Spacer(1, 0.1*cm))
@@ -381,7 +388,7 @@ def generate_eudr_pdf(
             f'<font size="5" color="#666666">{line}</font>',
             styles["Legal"]
         ))
-        content.append(Spacer(1, 0.05*cm))
+        content.append(Spacer(1, 0.03*cm))
     
     content.append(Spacer(1, 0.05*cm))
     content.append(Paragraph(
