@@ -178,7 +178,6 @@ def generate_eudr_pdf(
     signature = sign_audit(audit_id)
     verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
     verify_url_no_sig = f"{BASE_URL}/eudr/verify/{audit_id}"
-    sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     
     # ---------- QR CODE ----------
     qr_path = f"/tmp/{audit_id}_qr.png"
@@ -339,12 +338,11 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ---------- VERIFICATION ----------
-    # On affiche l'URL sans la signature, et la signature tronquée
+    # On affiche l'URL sans la signature, et la signature tronquée (SHA256 supprimé)
     signature_short = signature[:32] + "..."
     verify_data = [
         [Paragraph(f"Verify: {verify_url_no_sig}", styles["VerifyText"])],
-        [Paragraph(f"Signature: {signature_short}", styles["VerifyText"])],
-        [Paragraph(f"SHA256: {sha}", styles["VerifyText"])]
+        [Paragraph(f"Signature: {signature_short}", styles["VerifyText"])]
     ]
     verify_table = Table(verify_data, colWidths=[doc.width])
     verify_table.setStyle(TableStyle([
@@ -360,10 +358,12 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ---------- LEGAL NOTICES ----------
-    # Sans emojis, police 6 pt, alignée à gauche
+    # Nouvelles lignes selon la demande
     legal_lines = [
-        "EUDR (EU) 2023/1115 • OECD • UN • ILO • UNCCD • UNFCCC",
-        "Law 1581/2012 • GDPR EU 2016/679 Art.6",
+        "EUDR (EU) 2023/1115",
+        "OECD Due Diligence Guidance",
+        "Law 1581/2012 (Colombia)",
+        "GDPR EU 2016/679",
         "Report generated from satellite data.",
         "Tierras de Montaña is not responsible for decisions made based on this report."
     ]
@@ -372,8 +372,14 @@ def generate_eudr_pdf(
         content.append(Spacer(1, 0.03*cm))
     
     content.append(Spacer(1, 0.05*cm))
+    # Footer modifié : deux lignes, sans Page 1/1
     content.append(Paragraph(
-        f"Generated on {current_date} • Audit ID: {audit_id} • Page 1/1",
+        f"Generated on {current_date}",
+        styles["Legal"]
+    ))
+    content.append(Spacer(1, 0.03*cm))
+    content.append(Paragraph(
+        f"Audit ID: {audit_id}",
         styles["Legal"]
     ))
     
