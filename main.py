@@ -43,9 +43,14 @@ def eudr_check(payload: dict):
     lon = float(payload.get("lon"))
     polygon = payload.get("polygon")  # Lista de [lat, lon] desde el frontend
 
-    # CORRECCIÓN: Invertir a [lon, lat] para GEE y validar mínimo 3 puntos
+    # Procesar polígono
     if polygon and len(polygon) >= 3:
-        polygon = [[float(p[1]), float(p[0])] for p in polygon]  # [lon, lat]
+        # 1. Invertir a [lon, lat] para GEE
+        polygon = [[float(p[1]), float(p[0])] for p in polygon]
+        
+        # 2. CORRECCIÓN CRÍTICA: Cerrar el anillo para Google Earth Engine
+        if polygon[0] != polygon[-1]:
+            polygon.append(polygon[0])
     else:
         polygon = None
 
@@ -129,7 +134,7 @@ def download_pdf(audit_id: str, signature: str):
             tree_cover=audit.get("tree_cover", 0),
             loss_year=audit.get("loss_year", 0),
             source=audit.get("source", "unknown"),
-            polygon_points=audit.get("polygon_points")   # Pasa el polígono al PDF
+            polygon_points=audit.get("polygon_points")
         )
 
         print("PDF GENERATED:", file_path)
