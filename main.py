@@ -1,4 +1,3 @@
-```python
 import os
 import hashlib
 from fastapi import FastAPI, HTTPException
@@ -38,9 +37,8 @@ def eudr_check(payload: dict):
     name = payload.get("name")
     lat = float(payload.get("lat"))
     lon = float(payload.get("lon"))
-    polygon = payload.get("polygon")  # lista de [lat, lon]
+    polygon = payload.get("polygon")
     
-    # Validar polígono: mínimo 3 puntos
     if polygon and len(polygon) >= 3:
         polygon = [[float(p[0]), float(p[1])] for p in polygon]
     else:
@@ -180,4 +178,3 @@ def audit_page(audit_id: str):
     </body>
     </html>
     """)
-```
