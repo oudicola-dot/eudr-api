@@ -7,8 +7,9 @@ from eudr import init_db, create_audit, get_audit
 from pdf_report import generate_eudr_pdf
 from security import verify_signature
 
-app = FastAPI(title="EUDR Enterprise Registry", version="2.2")
+app = FastAPI(title="EUDR Enterprise Registry", version="2.3")
 
+# ========== CORS ==========
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,14 +18,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ========== VARIABLES DE ENTORNO ==========
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise RuntimeError("API_KEY environment variable missing")
 
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
+# ========== BASE DE DATOS ==========
 init_db()
 
+# ========== ENDPOINTS ==========
 @app.get("/")
 def root():
     return {"status": "online", "service": "EUDR API"}
@@ -33,27 +37,28 @@ def root():
 def eudr_check(payload: dict):
     if payload.get("api_key") != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    
+
     name = payload.get("name")
     lat = float(payload.get("lat"))
     lon = float(payload.get("lon"))
-    polygon = payload.get("polygon")
-    
+    polygon = payload.get("polygon")  # Lista de [lat, lon] desde el frontend
+
+    # CORRECCIÓN: Invertir a [lon, lat] para GEE y validar mínimo 3 puntos
     if polygon and len(polygon) >= 3:
-        polygon = [[float(p[0]), float(p[1])] for p in polygon]
+        polygon = [[float(p[1]), float(p[0])] for p in polygon]  # [lon, lat]
     else:
         polygon = None
-    
+
     audit = create_audit(name, lat, lon, polygon)
     audit_id = audit["audit_id"]
     signature = audit["signature"]
-    
+
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
-    
+
     audit["sha256"] = sha
     audit["verify_url"] = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
     audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}?signature={signature}"
-    
+
     return audit
 
 @app.get("/eudr/verify/{audit_id}")
@@ -61,17 +66,17 @@ def verify_audit(audit_id: str, signature: str):
     audit = get_audit(audit_id)
     if not audit:
         raise HTTPException(status_code=404, detail="Audit not found")
-    
+
     if not verify_signature(audit_id, signature):
         raise HTTPException(status_code=403, detail="Invalid signature")
-    
+
     sha = hashlib.sha256(
         f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
     ).hexdigest()
-    
+
     source = audit.get("source", "unknown")
     source_label = "🌍 Earth Engine" if source == "ee" else "🛰️ GFW" if source == "gfw" else "⚠️ Simulation"
-    
+
     return HTMLResponse(f"""
     <html>
     <body style="font-family:Arial;background:#0b1220;color:white;padding:40px;">
@@ -124,7 +129,7 @@ def download_pdf(audit_id: str, signature: str):
             tree_cover=audit.get("tree_cover", 0),
             loss_year=audit.get("loss_year", 0),
             source=audit.get("source", "unknown"),
-            polygon_points=audit.get("polygon_points")
+            polygon_points=audit.get("polygon_points")   # Pasa el polígono al PDF
         )
 
         print("PDF GENERATED:", file_path)
@@ -144,16 +149,16 @@ def audit_page(audit_id: str):
     audit = get_audit(audit_id)
     if not audit:
         return HTMLResponse("<h1>Audit not found</h1>", status_code=404)
-    
+
     sha = hashlib.sha256(
         f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
     ).hexdigest()
-    
+
     signature = audit["signature"]
-    
+
     source = audit.get("source", "unknown")
     source_label = "🌍 Earth Engine" if source == "ee" else "🛰️ GFW" if source == "gfw" else "⚠️ Simulation"
-    
+
     return HTMLResponse(f"""
     <html>
     <body style="font-family:Arial;background:#0b1220;color:white;padding:40px;">
