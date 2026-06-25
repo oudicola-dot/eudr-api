@@ -59,14 +59,12 @@ def get_status_color(status):
 def get_custom_styles():
     styles = getSampleStyleSheet()
     
-    # Titre principal (si logo absent)
     styles['Title'].fontSize = 12
     styles['Title'].textColor = colors.HexColor("#000000")
     styles['Title'].alignment = TA_CENTER
     styles['Title'].fontName = 'Helvetica-Bold'
     styles['Title'].spaceAfter = 4
 
-    # Titre du rapport (12 pt)
     styles.add(ParagraphStyle(
         name='TitleHeader',
         parent=styles['Normal'],
@@ -77,7 +75,6 @@ def get_custom_styles():
         leading=14
     ))
 
-    # Informations entreprise (6 pt)
     styles.add(ParagraphStyle(
         name='CompanyInfo',
         parent=styles['Normal'],
@@ -87,7 +84,6 @@ def get_custom_styles():
         fontName='Helvetica'
     ))
 
-    # Label (8 pt, gras)
     styles.add(ParagraphStyle(
         name='Label',
         parent=styles['Normal'],
@@ -96,7 +92,6 @@ def get_custom_styles():
         fontName='Helvetica-Bold'
     ))
 
-    # Value (8 pt, normal)
     styles.add(ParagraphStyle(
         name='Value',
         parent=styles['Normal'],
@@ -105,7 +100,6 @@ def get_custom_styles():
         fontName='Helvetica'
     ))
 
-    # En‑tête de tableau (8 pt, normal)
     styles.add(ParagraphStyle(
         name='HeaderText',
         parent=styles['Normal'],
@@ -114,7 +108,6 @@ def get_custom_styles():
         fontName='Helvetica'
     ))
 
-    # Mentions légales, Verify, SHA256 (6 pt)
     styles.add(ParagraphStyle(
         name='Legal',
         parent=styles['Normal'],
@@ -125,7 +118,6 @@ def get_custom_styles():
         leading=8
     ))
 
-    # Vérification (6 pt)
     styles.add(ParagraphStyle(
         name='VerifyText',
         parent=styles['Normal'],
@@ -149,13 +141,15 @@ def generate_eudr_pdf(
     eudr_compliant,
     tree_cover,
     loss_year,
-    source="unknown"
+    source="unknown",
+    polygon_points=None   # <-- NUEVO PARÁMETRO
 ):
     print("=" * 40)
     print("📄 PDF GENERATION START")
     print(f"📌 AUDIT: {audit_id}")
     print(f"🏷️ FARM: {name}")
     print(f"📡 SOURCE: {source}")
+    print(f"📐 POLYGON POINTS: {polygon_points is not None}")
     print("=" * 40)
 
     file_path = f"/tmp/{audit_id}.pdf"
@@ -199,14 +193,12 @@ def generate_eudr_pdf(
         except Exception as e:
             print("❌ LOGO ERROR:", str(e))
     
-    # Largeurs des colonnes : gauche (logo), centre (titre), droite (QR)
     total_width = doc.width
     col_left = total_width * 0.20
     col_center = total_width * 0.60
     col_right = total_width * 0.20
     header_cols = [col_left, col_center, col_right]
     
-    # Ligne 1 : Logo, Titre, QR
     row1 = []
     if logo_img:
         row1.append(logo_img)
@@ -220,8 +212,6 @@ def generate_eudr_pdf(
     else:
         row1.append(Paragraph("", styles["HeaderText"]))
     
-    # Ligne 2 : Infos entreprise (gauche), "Check with QR" (droite)
-    # On force la taille de police à 6 pt pour que tout tienne sur une ligne
     company_text = "Sarah Jo SAS • NIT: 900693208-2 • contact@tierrasdemontana.com"
     row2 = [
         Paragraph(company_text, styles["CompanyInfo"]),
@@ -268,24 +258,52 @@ def generate_eudr_pdf(
     content.append(status_table)
     content.append(Spacer(1, 0.2*cm))
     
-    # ---------- FARM DETAILS ----------
-    details = [
-        ("Farm", name),
-        ("Latitude", f"{lat:.6f}"),
-        ("Longitude", f"{lon:.6f}"),
-        ("Tree Cover", f"{tree_cover}%"),
-        ("Loss Year", str(loss_year) if loss_year > 0 else "N/A"),
-        ("Risk Score", str(risk_score)),
-        ("Risk Level", risk_level)
+    # ---------- FARM DETAILS (CON SOPORTE PARA POLÍGONO) ----------
+    detail_rows = [
+        [Paragraph("Farm", styles["Label"]), Paragraph(name, styles["Value"])]
     ]
-    detail_rows = []
-    for label, value in details:
+
+    if polygon_points and len(polygon_points) >= 3:
+        # Mostrar "Multiple" en Lat/Lon
         detail_rows.append([
-            Paragraph(label, styles["Label"]),
-            Paragraph(str(value), styles["Value"])
+            Paragraph("Latitude", styles["Label"]),
+            Paragraph("Multiple (see polygon below)", styles["Value"])
         ])
-    
-    # Largeur : 30% pour label, 70% pour value
+        detail_rows.append([
+            Paragraph("Longitude", styles["Label"]),
+            Paragraph("Multiple (see polygon below)", styles["Value"])
+        ])
+    else:
+        detail_rows.append([
+            Paragraph("Latitude", styles["Label"]),
+            Paragraph(f"{lat:.6f}", styles["Value"])
+        ])
+        detail_rows.append([
+            Paragraph("Longitude", styles["Label"]),
+            Paragraph(f"{lon:.6f}", styles["Value"])
+        ])
+
+    # Resto de detalles
+    detail_rows.extend([
+        [Paragraph("Tree Cover", styles["Label"]), Paragraph(f"{tree_cover}%", styles["Value"])],
+        [Paragraph("Loss Year", styles["Label"]), Paragraph(str(loss_year) if loss_year > 0 else "N/A", styles["Value"])],
+        [Paragraph("Risk Score", styles["Label"]), Paragraph(str(risk_score), styles["Value"])],
+        [Paragraph("Risk Level", styles["Label"]), Paragraph(risk_level, styles["Value"])]
+    ])
+
+    # Si hay polígono, añadir lista de puntos
+    if polygon_points and len(polygon_points) >= 3:
+        # Fila de separación
+        detail_rows.append([
+            Paragraph("Polygon Points", styles["Label"]),
+            Paragraph("", styles["Value"])
+        ])
+        for i, (p_lat, p_lon) in enumerate(polygon_points, start=1):
+            detail_rows.append([
+                Paragraph(f"  Point {i}", styles["Label"]),
+                Paragraph(f"Lat: {p_lat:.6f}, Lon: {p_lon:.6f}", styles["Value"])
+            ])
+
     detail_cols = [doc.width * 0.30, doc.width * 0.70]
     detail_table = Table(detail_rows, colWidths=detail_cols)
     detail_table.setStyle(TableStyle([
@@ -307,7 +325,6 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ---------- RISK LEGEND ----------
-    # Sans emojis, juste des couleurs de fond
     legend_data = [
         [
             Paragraph("Low (0-30)", styles["HeaderText"]),
@@ -338,7 +355,6 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ---------- VERIFICATION ----------
-    # On affiche l'URL sans la signature, et la signature tronquée (SHA256 supprimé)
     signature_short = signature[:32] + "..."
     verify_data = [
         [Paragraph(f"Verify: {verify_url_no_sig}", styles["VerifyText"])],
@@ -358,7 +374,6 @@ def generate_eudr_pdf(
     content.append(Spacer(1, 0.1*cm))
     
     # ---------- LEGAL NOTICES ----------
-    # Nouvelles lignes selon la demande
     legal_lines = [
         "EUDR (EU) 2023/1115",
         "OECD Due Diligence Guidance",
@@ -372,16 +387,9 @@ def generate_eudr_pdf(
         content.append(Spacer(1, 0.03*cm))
     
     content.append(Spacer(1, 0.05*cm))
-    # Footer modifié : deux lignes, sans Page 1/1
-    content.append(Paragraph(
-        f"Generated on {current_date}",
-        styles["Legal"]
-    ))
+    content.append(Paragraph(f"Generated on {current_date}", styles["Legal"]))
     content.append(Spacer(1, 0.03*cm))
-    content.append(Paragraph(
-        f"Audit ID: {audit_id}",
-        styles["Legal"]
-    ))
+    content.append(Paragraph(f"Audit ID: {audit_id}", styles["Legal"]))
     
     # ---------- BUILD PDF ----------
     print("📄 BUILDING PDF...")
