@@ -1,4 +1,4 @@
-# v2.4 - CORREGIDO: GFW loss_year, credenciales desde env, get_audit con índices
+# v2.4 - CORREGIDO: GFW, coordenadas GEE, get_audit, credenciales, polígonos
 import uuid
 import sqlite3
 import os
@@ -22,13 +22,13 @@ try:
     cred_path = "/etc/secrets/earth-engine-credentials.json"
     print(f"📁 Trying file: {cred_path}")
     print(f"📁 File exists: {os.path.exists(cred_path)}")
-    
+
     if os.path.exists(cred_path):
         print("📖 Reading credentials file...")
         with open(cred_path, "r") as f:
             credentials_info = json.load(f)
         print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
-        
+
         credentials = ee.ServiceAccountCredentials(
             credentials_info["client_email"],
             key_data=json.dumps(credentials_info)
@@ -42,10 +42,11 @@ try:
             print("📖 Reading credentials from environment variable...")
             credentials_info = json.loads(credentials_json)
             print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
-            
+
+            # CORRECCIÓN: usar la cadena JSON directamente, NO re-serializar
             credentials = ee.ServiceAccountCredentials(
                 credentials_info["client_email"],
-                key_data=credentials_json
+                key_data=credentials_json  # <-- DIRECTO
             )
             ee.Initialize(credentials, project=EE_PROJECT)
             EE_INITIALIZED = True
@@ -88,61 +89,65 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== GFW API ==========
+# ========== GFW API (CORREGIDA) ==========
 def compute_risk_gfw(lat: float, lon: float):
     print("🔄 Trying GFW API...")
     if not GFW_API_KEY:
         print("⚠️ GFW_API_KEY not set")
         return None
-    
+
     try:
         url = f"https://data-api.globalforestwatch.org/dataset/umd_tree_cover_density_2000/v1.6/query/json?sql=SELECT%20treeCover%20FROM%20umd_tree_cover_density_2000%20WHERE%20latitude={lat}%20AND%20longitude={lon}"
         headers = {"x-api-key": GFW_API_KEY}
         response = requests.get(url, headers=headers, timeout=10)
-        
+
         if response.status_code != 200:
             print(f"⚠️ GFW returned {response.status_code}")
             return None
-        
+
         data = response.json()
         tree_cover = 0
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+            # CORRECCIÓN: acceder al primer elemento de la lista
             tree_cover = data["data"][0].get("treeCover", 0)
         elif "treeCover" in data:
             tree_cover = data.get("treeCover", 0)
-        
+
         print(f"🛰️ GFW: tree_cover={tree_cover}")
         return {
             "tree_cover": tree_cover,
-            "loss_year": 0,
+            "loss_year": 0,       # GFW no da pérdida, asumimos 0
             "source": "gfw"
         }
     except Exception as e:
         print(f"❌ GFW error: {e}")
         return None
 
-# ========== EARTH ENGINE API ==========
+# ========== EARTH ENGINE API (CORREGIDA) ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
     print("🌍 Trying Earth Engine...")
-    
+
     if not EE_INITIALIZED:
         print("⚠️ Earth Engine not initialized, skipping...")
         return None
-    
+
     try:
+        # Construir geometría: polígono o punto con buffer
         if polygon and len(polygon) >= 3:
-            coords = [[p[0], p[1]] for p in polygon]
+            # CORRECCIÓN: invertir a [lon, lat] para GEE
+            coords = [[p[1], p[0]] for p in polygon]  # <-- [lon, lat]
             geometry = ee.Geometry.Polygon(coords)
             print(f"📐 Polygon: {len(polygon)} points")
         else:
             point = ee.Geometry.Point(lon, lat)
-            geometry = point.buffer(30)
+            geometry = point.buffer(30)  # buffer de 30 metros
             print("📍 Point with 30m buffer")
 
         dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
+        # Reductor: mean() para promediar toda el área
         treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
@@ -158,6 +163,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         ).get('lossyear').getInfo()
 
         tree_cover = int(round(treecover_val if treecover_val is not None else 0))
+        # Usamos -1 para indicar "sin pérdida" (bosque virgen)
         loss_year = int(round(lossyear_val if lossyear_val is not None else -1))
 
         print(f"🌳 EE: tree_cover={tree_cover}, loss_year={loss_year}")
@@ -170,7 +176,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         print(f"❌ Earth Engine error: {e}")
         return None
 
-# ========== ORCHESTRATEUR ==========
+# ========== ORCHESTRATEUR (GEE primero, GFW respaldo, fallback) ==========
 def compute_risk(lat: float, lon: float, polygon=None):
     print("========== compute_risk() called ==========")
     print(f"Lat: {lat}, Lon: {lon}")
@@ -187,11 +193,13 @@ def compute_risk(lat: float, lon: float, polygon=None):
         else:
             return {"risk_score": risk, "risk_level": "HIGH", "eudr_compliant": "NON COMPLIANT", "tree_cover": 50, "loss_year": 2022, "source": "fallback"}
 
+    # 1. Earth Engine (prioridad, soporta polígonos)
     result = compute_risk_ee(lat, lon, polygon)
     if result:
         tree_cover = result["tree_cover"]
         loss_year = result["loss_year"]
         source = result["source"]
+        # Lógica de riesgo con corrección para loss_year
         if tree_cover > 30 and loss_year > 2020:
             risk_score = 85
             risk_level = "HIGH"
@@ -209,15 +217,17 @@ def compute_risk(lat: float, lon: float, polygon=None):
             "risk_level": risk_level,
             "eudr_compliant": compliant,
             "tree_cover": tree_cover,
-            "loss_year": loss_year if loss_year > 0 else 0,
+            "loss_year": loss_year if loss_year > 0 else 0,  # guardamos 0 para "sin pérdida"
             "source": source
         }
 
+    # 2. GFW (respaldo, solo punto)
     result = compute_risk_gfw(lat, lon)
     if result:
         tree_cover = result["tree_cover"]
-        loss_year = result["loss_year"]
+        loss_year = result["loss_year"]  # AHORA EXISTE
         source = result["source"]
+        # GFW no da loss_year, evaluamos solo tree_cover
         if tree_cover > 30:
             risk_score = 50
             risk_level = "MEDIUM"
@@ -235,6 +245,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
             "source": source
         }
 
+    # 3. Fallback (simulación)
     print("⚠️ Using fallback")
     return fallback()
 
@@ -305,6 +316,7 @@ def get_audit(audit_id: str):
     if not row:
         return None
 
+    # CORRECCIÓN: usar índices numéricos (no la tupla completa)
     return {
         "audit_id": row[0],
         "farm_name": row[1],
