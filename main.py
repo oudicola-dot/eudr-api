@@ -1,14 +1,14 @@
+```python
 import os
-import pathlib
 import hashlib
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from eudr import init_db, create_audit, get_audit
 from pdf_report import generate_eudr_pdf
-from security import sign_audit, verify_signature
+from security import verify_signature
 
-app = FastAPI(title="EUDR Enterprise Registry", version="2.0")
+app = FastAPI(title="EUDR Enterprise Registry", version="2.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,18 +19,8 @@ app.add_middleware(
 )
 
 API_KEY = os.getenv("API_KEY")
-
 if not API_KEY:
     raise RuntimeError("API_KEY environment variable missing")
-
-@app.get("/debug")
-def debug():
-    return {
-        "api_key_present": bool(API_KEY),
-        "api_key_length": len(API_KEY) if API_KEY else 0,
-        "api_key_first": API_KEY[:4] if API_KEY else "",
-        "api_key_last": API_KEY[-4:] if API_KEY else ""
-    }
 
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 
@@ -48,8 +38,15 @@ def eudr_check(payload: dict):
     name = payload.get("name")
     lat = float(payload.get("lat"))
     lon = float(payload.get("lon"))
+    polygon = payload.get("polygon")  # lista de [lat, lon]
     
-    audit = create_audit(name, lat, lon)
+    # Validar polígono: mínimo 3 puntos
+    if polygon and len(polygon) >= 3:
+        polygon = [[float(p[0]), float(p[1])] for p in polygon]
+    else:
+        polygon = None
+    
+    audit = create_audit(name, lat, lon, polygon)
     audit_id = audit["audit_id"]
     signature = audit["signature"]
     
@@ -74,7 +71,6 @@ def verify_audit(audit_id: str, signature: str):
         f"{audit_id}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()
     ).hexdigest()
     
-    # ✅ Ajout de Data Source dans la page de vérification
     source = audit.get("source", "unknown")
     source_label = "🌍 Earth Engine" if source == "ee" else "🛰️ GFW" if source == "gfw" else "⚠️ Simulation"
     
@@ -105,30 +101,20 @@ def verify_audit(audit_id: str, signature: str):
 
 @app.get("/download/{audit_id}")
 def download_pdf(audit_id: str, signature: str):
-
     print("========== DOWNLOAD ==========")
     print("AUDIT:", audit_id)
 
     if not verify_signature(audit_id, signature):
         print("INVALID SIGNATURE")
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid signature"
-        )
+        raise HTTPException(status_code=403, detail="Invalid signature")
 
     audit = get_audit(audit_id)
-
     print("AUDIT DATA:", audit)
 
     if audit is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Audit not found"
-        )
+        raise HTTPException(status_code=404, detail="Audit not found")
 
     try:
-
-        # ✅ AJOUT DU PARAMÈTRE source
         file_path = generate_eudr_pdf(
             audit_id=audit["audit_id"],
             name=audit["farm_name"],
@@ -139,7 +125,8 @@ def download_pdf(audit_id: str, signature: str):
             eudr_compliant=audit["eudr_compliant"],
             tree_cover=audit.get("tree_cover", 0),
             loss_year=audit.get("loss_year", 0),
-            source=audit.get("source", "unknown")
+            source=audit.get("source", "unknown"),
+            polygon_points=audit.get("polygon_points")
         )
 
         print("PDF GENERATED:", file_path)
@@ -151,13 +138,8 @@ def download_pdf(audit_id: str, signature: str):
         )
 
     except Exception as e:
-
         print("PDF ERROR:", str(e))
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/audit/{audit_id}", response_class=HTMLResponse)
 def audit_page(audit_id: str):
@@ -171,7 +153,6 @@ def audit_page(audit_id: str):
     
     signature = audit["signature"]
     
-    # ✅ Ajout de Data Source dans la page d'audit
     source = audit.get("source", "unknown")
     source_label = "🌍 Earth Engine" if source == "ee" else "🛰️ GFW" if source == "gfw" else "⚠️ Simulation"
     
@@ -199,3 +180,4 @@ def audit_page(audit_id: str):
     </body>
     </html>
     """)
+```
