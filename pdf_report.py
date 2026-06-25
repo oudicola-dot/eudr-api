@@ -142,7 +142,7 @@ def generate_eudr_pdf(
     tree_cover,
     loss_year,
     source="unknown",
-    polygon_points=None   # <-- NUEVO PARÁMETRO
+    polygon_points=None
 ):
     print("=" * 40)
     print("📄 PDF GENERATION START")
@@ -258,49 +258,49 @@ def generate_eudr_pdf(
     content.append(status_table)
     content.append(Spacer(1, 0.2*cm))
     
-# ---------- FARM DETAILS (CON SOPORTE PARA POLÍGONO) ----------
-detail_rows = [
-    [Paragraph("Farm", styles["Label"]), Paragraph(name, styles["Value"])]
-]
+    # ---------- FARM DETAILS (CON SOPORTE PARA POLÍGONO Y COORDENADAS CORRECTAS) ----------
+    detail_rows = [
+        [Paragraph("Farm", styles["Label"]), Paragraph(name, styles["Value"])]
+    ]
 
-if polygon_points and len(polygon_points) >= 3:
-    detail_rows.append([
-        Paragraph("Latitude", styles["Label"]),
-        Paragraph("Multiple (see polygon below)", styles["Value"])
-    ])
-    detail_rows.append([
-        Paragraph("Longitude", styles["Label"]),
-        Paragraph("Multiple (see polygon below)", styles["Value"])
-    ])
-else:
-    detail_rows.append([
-        Paragraph("Latitude", styles["Label"]),
-        Paragraph(f"{lat:.6f}", styles["Value"])
-    ])
-    detail_rows.append([
-        Paragraph("Longitude", styles["Label"]),
-        Paragraph(f"{lon:.6f}", styles["Value"])
-    ])
-
-detail_rows.extend([
-    [Paragraph("Tree Cover", styles["Label"]), Paragraph(f"{tree_cover}%", styles["Value"])],
-    [Paragraph("Loss Year", styles["Label"]), Paragraph(str(loss_year) if loss_year > 0 else "N/A", styles["Value"])],
-    [Paragraph("Risk Score", styles["Label"]), Paragraph(str(risk_score), styles["Value"])],
-    [Paragraph("Risk Level", styles["Label"]), Paragraph(risk_level, styles["Value"])]
-])
-
-# Si hay polígono, añadir lista de puntos (CORREGIDO)
-if polygon_points and len(polygon_points) >= 3:
-    detail_rows.append([
-        Paragraph("Polygon Points", styles["Label"]),
-        Paragraph("", styles["Value"])
-    ])
-    # CORRECCIÓN: desempaquetar (lon, lat) y etiquetar correctamente
-    for i, (p_lon, p_lat) in enumerate(polygon_points, start=1):
+    if polygon_points and len(polygon_points) >= 3:
         detail_rows.append([
-            Paragraph(f"  Point {i}", styles["Label"]),
-            Paragraph(f"Lat: {p_lat:.6f}, Lon: {p_lon:.6f}", styles["Value"])
+            Paragraph("Latitude", styles["Label"]),
+            Paragraph("Multiple (see polygon below)", styles["Value"])
         ])
+        detail_rows.append([
+            Paragraph("Longitude", styles["Label"]),
+            Paragraph("Multiple (see polygon below)", styles["Value"])
+        ])
+    else:
+        detail_rows.append([
+            Paragraph("Latitude", styles["Label"]),
+            Paragraph(f"{lat:.6f}", styles["Value"])
+        ])
+        detail_rows.append([
+            Paragraph("Longitude", styles["Label"]),
+            Paragraph(f"{lon:.6f}", styles["Value"])
+        ])
+
+    detail_rows.extend([
+        [Paragraph("Tree Cover", styles["Label"]), Paragraph(f"{tree_cover}%", styles["Value"])],
+        [Paragraph("Loss Year", styles["Label"]), Paragraph(str(loss_year) if loss_year > 0 else "N/A", styles["Value"])],
+        [Paragraph("Risk Score", styles["Label"]), Paragraph(str(risk_score), styles["Value"])],
+        [Paragraph("Risk Level", styles["Label"]), Paragraph(risk_level, styles["Value"])]
+    ])
+
+    # Si hay polígono, añadir lista de puntos (CORREGIDO: etiquetas correctas)
+    if polygon_points and len(polygon_points) >= 3:
+        detail_rows.append([
+            Paragraph("Polygon Points", styles["Label"]),
+            Paragraph("", styles["Value"])
+        ])
+        # CORRECCIÓN: desempaquetar (lon, lat) y etiquetar correctamente
+        for i, (p_lon, p_lat) in enumerate(polygon_points, start=1):
+            detail_rows.append([
+                Paragraph(f"  Point {i}", styles["Label"]),
+                Paragraph(f"Lat: {p_lat:.6f}, Lon: {p_lon:.6f}", styles["Value"])
+            ])
 
     detail_cols = [doc.width * 0.30, doc.width * 0.70]
     detail_table = Table(detail_rows, colWidths=detail_cols)
