@@ -134,20 +134,18 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
     try:
         # Construir geometría: polígono o punto con buffer
         if polygon and len(polygon) >= 3:
-            # CORRECCIÓN: invertir a [lon, lat] para GEE
-            coords = [[p[1], p[0]] for p in polygon]  # <-- [lon, lat]
-            geometry = ee.Geometry.Polygon(coords)
+            # polygon ya viene en [lon, lat] desde main.py (con cierre automático)
+            geometry = ee.Geometry.Polygon(polygon)
             print(f"📐 Polygon: {len(polygon)} points")
         else:
             point = ee.Geometry.Point(lon, lat)
-            geometry = point.buffer(30)  # buffer de 30 metros
+            geometry = point.buffer(30)
             print("📍 Point with 30m buffer")
 
         dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
-        # Reductor: mean() para promediar toda el área
         treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
@@ -163,7 +161,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         ).get('lossyear').getInfo()
 
         tree_cover = int(round(treecover_val if treecover_val is not None else 0))
-        # Usamos -1 para indicar "sin pérdida" (bosque virgen)
         loss_year = int(round(lossyear_val if lossyear_val is not None else -1))
 
         print(f"🌳 EE: tree_cover={tree_cover}, loss_year={loss_year}")
