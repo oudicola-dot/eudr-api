@@ -289,14 +289,18 @@ def generate_eudr_pdf(
         [Paragraph("Risk Level", styles["Label"]), Paragraph(risk_level, styles["Value"])]
     ])
 
-    # Si hay polígono, añadir lista de puntos (CORREGIDO: etiquetas correctas)
+    # Si hay polígono, añadir lista de puntos (OMITIENDO EL DUPLICADO DE CIERRE)
     if polygon_points and len(polygon_points) >= 3:
         detail_rows.append([
             Paragraph("Polygon Points", styles["Label"]),
             Paragraph("", styles["Value"])
         ])
-        # CORRECCIÓN: desempaquetar (lon, lat) y etiquetar correctamente
-        for i, (p_lon, p_lat) in enumerate(polygon_points, start=1):
+        
+        # Si el polígono está cerrado (el último punto es igual al primero),
+        # mostramos todos excepto el último para no duplicar visualmente.
+        display_points = polygon_points[:-1] if polygon_points[0] == polygon_points[-1] else polygon_points
+        
+        for i, (p_lon, p_lat) in enumerate(display_points, start=1):
             detail_rows.append([
                 Paragraph(f"  Point {i}", styles["Label"]),
                 Paragraph(f"Lat: {p_lat:.6f}, Lon: {p_lon:.6f}", styles["Value"])
