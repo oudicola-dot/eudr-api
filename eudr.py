@@ -40,13 +40,12 @@ try:
         credentials_json = os.getenv("EE_CREDENTIALS_JSON")
         if credentials_json:
             print("📖 Reading credentials from environment variable...")
-            # CORRECCIÓN: NO re-serializar, usar la cadena directamente
             credentials_info = json.loads(credentials_json)
             print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
             
             credentials = ee.ServiceAccountCredentials(
                 credentials_info["client_email"],
-                key_data=credentials_json  # <-- ¡CORREGIDO! (directo)
+                key_data=credentials_json
             )
             ee.Initialize(credentials, project=EE_PROJECT)
             EE_INITIALIZED = True
@@ -89,7 +88,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== GFW API (CORREGIDA) ==========
+# ========== GFW API ==========
 def compute_risk_gfw(lat: float, lon: float):
     print("🔄 Trying GFW API...")
     if not GFW_API_KEY:
@@ -113,17 +112,16 @@ def compute_risk_gfw(lat: float, lon: float):
             tree_cover = data.get("treeCover", 0)
         
         print(f"🛰️ GFW: tree_cover={tree_cover}")
-        # CORRECCIÓN: incluir "loss_year": 0 para evitar KeyError
         return {
             "tree_cover": tree_cover,
-            "loss_year": 0,      # <-- ¡AGREGADO!
+            "loss_year": 0,
             "source": "gfw"
         }
     except Exception as e:
         print(f"❌ GFW error: {e}")
         return None
 
-# ========== EARTH ENGINE API (CORREGIDA) ==========
+# ========== EARTH ENGINE API ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
     print("🌍 Trying Earth Engine...")
     
@@ -132,22 +130,19 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         return None
     
     try:
-        # Build geometry: polygon or point with buffer
         if polygon and len(polygon) >= 3:
-            # CORRECCIÓN: NO invertir coordenadas (main.py ya lo hace)
-            coords = [[p[0], p[1]] for p in polygon]  # Ya vienen como [lat, lon]
+            coords = [[p[0], p[1]] for p in polygon]
             geometry = ee.Geometry.Polygon(coords)
             print(f"📐 Polygon: {len(polygon)} points")
         else:
             point = ee.Geometry.Point(lon, lat)
-            geometry = point.buffer(30)  # 30 meters buffer for point
+            geometry = point.buffer(30)
             print("📍 Point with 30m buffer")
 
         dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
-        # Use mean reducer to get average cover over the area
         treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
@@ -163,7 +158,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         ).get('lossyear').getInfo()
 
         tree_cover = int(round(treecover_val if treecover_val is not None else 0))
-        # Use -1 to indicate "no loss" (virgin forest)
         loss_year = int(round(lossyear_val if lossyear_val is not None else -1))
 
         print(f"🌳 EE: tree_cover={tree_cover}, loss_year={loss_year}")
@@ -193,7 +187,6 @@ def compute_risk(lat: float, lon: float, polygon=None):
         else:
             return {"risk_score": risk, "risk_level": "HIGH", "eudr_compliant": "NON COMPLIANT", "tree_cover": 50, "loss_year": 2022, "source": "fallback"}
 
-    # 1. Priorité: Earth Engine
     result = compute_risk_ee(lat, lon, polygon)
     if result:
         tree_cover = result["tree_cover"]
@@ -220,11 +213,10 @@ def compute_risk(lat: float, lon: float, polygon=None):
             "source": source
         }
 
-    # 2. Fallback: GFW
     result = compute_risk_gfw(lat, lon)
     if result:
         tree_cover = result["tree_cover"]
-        loss_year = result["loss_year"]  # <-- AHORA EXISTE
+        loss_year = result["loss_year"]
         source = result["source"]
         if tree_cover > 30:
             risk_score = 50
@@ -243,7 +235,6 @@ def compute_risk(lat: float, lon: float, polygon=None):
             "source": source
         }
 
-    # 3. Dernier recours
     print("⚠️ Using fallback")
     return fallback()
 
@@ -314,7 +305,6 @@ def get_audit(audit_id: str):
     if not row:
         return None
 
-    # CORRECCIÓN: usar índices numéricos (no la tupla completa)
     return {
         "audit_id": row[0],
         "farm_name": row[1],
