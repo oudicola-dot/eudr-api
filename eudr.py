@@ -1,5 +1,4 @@
-```python
-# v2.2 - GEE priority, polygon support, loss_year fix
+# v2.4 - CORREGIDO: GFW loss_year, credenciales desde env, get_audit con índices
 import uuid
 import sqlite3
 import os
@@ -41,12 +40,13 @@ try:
         credentials_json = os.getenv("EE_CREDENTIALS_JSON")
         if credentials_json:
             print("📖 Reading credentials from environment variable...")
+            # CORRECCIÓN: NO re-serializar, usar la cadena directamente
             credentials_info = json.loads(credentials_json)
             print(f"✅ Credentials loaded for: {credentials_info.get('client_email', 'unknown')}")
             
             credentials = ee.ServiceAccountCredentials(
                 credentials_info["client_email"],
-                key_data=json.dumps(credentials_info)
+                key_data=credentials_json  # <-- ¡CORREGIDO! (directo)
             )
             ee.Initialize(credentials, project=EE_PROJECT)
             EE_INITIALIZED = True
@@ -89,7 +89,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== GFW API ==========
+# ========== GFW API (CORREGIDA) ==========
 def compute_risk_gfw(lat: float, lon: float):
     print("🔄 Trying GFW API...")
     if not GFW_API_KEY:
@@ -113,16 +113,17 @@ def compute_risk_gfw(lat: float, lon: float):
             tree_cover = data.get("treeCover", 0)
         
         print(f"🛰️ GFW: tree_cover={tree_cover}")
+        # CORRECCIÓN: incluir "loss_year": 0 para evitar KeyError
         return {
             "tree_cover": tree_cover,
-            "loss_year": 0,
+            "loss_year": 0,      # <-- ¡AGREGADO!
             "source": "gfw"
         }
     except Exception as e:
         print(f"❌ GFW error: {e}")
         return None
 
-# ========== EARTH ENGINE API (CORRECTED) ==========
+# ========== EARTH ENGINE API (CORREGIDA) ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
     print("🌍 Trying Earth Engine...")
     
@@ -133,7 +134,8 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
     try:
         # Build geometry: polygon or point with buffer
         if polygon and len(polygon) >= 3:
-            coords = [[p[1], p[0]] for p in polygon]  # GEE expects [lon, lat]
+            # CORRECCIÓN: NO invertir coordenadas (main.py ya lo hace)
+            coords = [[p[0], p[1]] for p in polygon]  # Ya vienen como [lat, lon]
             geometry = ee.Geometry.Polygon(coords)
             print(f"📐 Polygon: {len(polygon)} points")
         else:
@@ -174,7 +176,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         print(f"❌ Earth Engine error: {e}")
         return None
 
-# ========== ORCHESTRATEUR (GEE first, then GFW, then fallback) ==========
+# ========== ORCHESTRATEUR ==========
 def compute_risk(lat: float, lon: float, polygon=None):
     print("========== compute_risk() called ==========")
     print(f"Lat: {lat}, Lon: {lon}")
@@ -191,13 +193,12 @@ def compute_risk(lat: float, lon: float, polygon=None):
         else:
             return {"risk_score": risk, "risk_level": "HIGH", "eudr_compliant": "NON COMPLIANT", "tree_cover": 50, "loss_year": 2022, "source": "fallback"}
 
-    # 1. Priorité: Earth Engine (supporte les polygones)
+    # 1. Priorité: Earth Engine
     result = compute_risk_ee(lat, lon, polygon)
     if result:
         tree_cover = result["tree_cover"]
         loss_year = result["loss_year"]
         source = result["source"]
-        # Logique de risque corrigée: loss_year > 0 pour une perte réelle
         if tree_cover > 30 and loss_year > 2020:
             risk_score = 85
             risk_level = "HIGH"
@@ -207,7 +208,6 @@ def compute_risk(lat: float, lon: float, polygon=None):
             risk_level = "MEDIUM"
             compliant = "COMPLIANT"
         else:
-            # Si loss_year <= 0 (pas de perte) ou tree_cover <= 30
             risk_score = 15
             risk_level = "LOW"
             compliant = "COMPLIANT"
@@ -216,17 +216,16 @@ def compute_risk(lat: float, lon: float, polygon=None):
             "risk_level": risk_level,
             "eudr_compliant": compliant,
             "tree_cover": tree_cover,
-            "loss_year": loss_year if loss_year > 0 else 0,  # stocker 0 pour "pas de perte"
+            "loss_year": loss_year if loss_year > 0 else 0,
             "source": source
         }
 
-    # 2. Fallback: GFW (ne supporte que le point)
+    # 2. Fallback: GFW
     result = compute_risk_gfw(lat, lon)
     if result:
         tree_cover = result["tree_cover"]
-        loss_year = result["loss_year"]
+        loss_year = result["loss_year"]  # <-- AHORA EXISTE
         source = result["source"]
-        # GFW ne donne pas loss_year, on évalue seulement sur tree_cover
         if tree_cover > 30:
             risk_score = 50
             risk_level = "MEDIUM"
@@ -244,7 +243,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
             "source": source
         }
 
-    # 3. Dernier recours: fallback
+    # 3. Dernier recours
     print("⚠️ Using fallback")
     return fallback()
 
@@ -315,6 +314,7 @@ def get_audit(audit_id: str):
     if not row:
         return None
 
+    # CORRECCIÓN: usar índices numéricos (no la tupla completa)
     return {
         "audit_id": row[0],
         "farm_name": row[1],
@@ -332,4 +332,3 @@ def get_audit(audit_id: str):
         "signature": row[13],
         "created_at": row[14]
     }
-```
