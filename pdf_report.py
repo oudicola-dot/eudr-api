@@ -25,10 +25,21 @@ TDM_GRAY = colors.HexColor("#F5F5F5")
 
 def get_logo():
     try:
-        r = requests.get(LOGO_URL, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
+        print("📥 DOWNLOADING LOGO...")
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
+        r = requests.get(LOGO_URL, timeout=8, headers=headers)
         r.raise_for_status()
+        
+        # VÉRIFICATION CRUCIALE : Est-ce que c'est bien une image ?
+        content_type = r.headers.get('Content-Type', '')
+        if not content_type.startswith('image/'):
+            print(f"❌ LOGO ERROR: Received {content_type} instead of an image.")
+            return None
+            
+        print("✅ LOGO DOWNLOADED")
         return io.BytesIO(r.content)
-    except Exception:
+    except Exception as e:
+        print("❌ LOGO DOWNLOAD ERROR:", str(e))
         return None
 
 def get_custom_styles():
