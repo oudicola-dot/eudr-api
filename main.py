@@ -57,11 +57,10 @@ async def verify_turnstile(token: str) -> bool:
                 timeout=5
             )
             data = response.json()
-            return (
-                data.get("success", False) and 
-                data.get("action") == "eudr_screening" and
-                data.get("hostname") == "tierrasdemontana.com"
-            )
+                    return (
+            data.get("success", False) and 
+            data.get("action") == "eudr_screening"
+        )
     except Exception:
         return False
 
