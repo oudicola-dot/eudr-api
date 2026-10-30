@@ -5,3 +5,6 @@ qrcode
 pillow
 requests
 earthengine-api
+shapely
+pyproj
+slowapi
