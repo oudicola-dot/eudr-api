@@ -1,416 +1,192 @@
 import os
 import io
-import hashlib
+import html
+import math
+import uuid
 import qrcode
 import requests
 from datetime import datetime
-
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Image,
-    Table,
-    TableStyle,
-    HRFlowable
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-from reportlab.lib.units import cm, mm
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-
+from reportlab.lib.units import cm
+from reportlab.lib.enums import TA_CENTER
 from security import sign_audit
+from shapely.geometry import Polygon
+from pyproj import Geod
 
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
+EXPECTED_DATASET = "UMD/hansen/global_forest_change_2023_v1_11"
 
+TDM_GREEN = colors.HexColor("#1E3A32")
+TDM_LIGHT_GREEN = colors.HexColor("#E8F2E8")
+TDM_GRAY = colors.HexColor("#F5F5F5")
 
-# ---------- UTILITY FUNCTIONS ----------
 def get_logo():
     try:
-        print("📥 DOWNLOADING LOGO...")
-        # On ajoute un User-Agent pour éviter le blocage par WordPress
-        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
-        r = requests.get(LOGO_URL, timeout=8, headers=headers)
+        r = requests.get(LOGO_URL, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
         r.raise_for_status()
-        
-        # On vérifie que ce qu'on reçoit est bien une image
-        content_type = r.headers.get('Content-Type', '')
-        if content_type.startswith('image/'):
-            print("✅ LOGO DOWNLOADED IN MEMORY")
-            return io.BytesIO(r.content) # On garde l'image en mémoire
-        else:
-            print(f"❌ LOGO ERROR: Received {content_type} instead of an image")
-            return None
-    except Exception as e:
-        print("❌ LOGO DOWNLOAD ERROR:", str(e))
+        return io.BytesIO(r.content)
+    except Exception:
         return None
 
-
-def get_source_label(source):
-    labels = {
-        "ee": "Earth Engine (Google)",
-        "gfw": "GFW (Global Forest Watch)",
-        "fallback": "Simulation",
-        "unknown": "Unknown"
-    }
-    return labels.get(source, source)
-
-
-def get_status_color(status):
-    return "#00cc66" if status == "COMPLIANT" else "#ff3333"
-
-
-# ---------- CUSTOM STYLES ----------
 def get_custom_styles():
     styles = getSampleStyleSheet()
-    
-    styles['Title'].fontSize = 12
-    styles['Title'].textColor = colors.HexColor("#000000")
-    styles['Title'].alignment = TA_CENTER
-    styles['Title'].fontName = 'Helvetica-Bold'
-    styles['Title'].spaceAfter = 4
-
-    styles.add(ParagraphStyle(
-        name='TitleHeader',
-        parent=styles['Normal'],
-        fontSize=12,
-        textColor=colors.HexColor("#000000"),
-        alignment=TA_CENTER,
-        fontName='Helvetica-Bold',
-        leading=14
-    ))
-
-    styles.add(ParagraphStyle(
-        name='CompanyInfo',
-        parent=styles['Normal'],
-        fontSize=6,
-        textColor=colors.HexColor("#555555"),
-        alignment=TA_LEFT,
-        fontName='Helvetica'
-    ))
-
-    styles.add(ParagraphStyle(
-        name='Label',
-        parent=styles['Normal'],
-        fontSize=8,
-        textColor=colors.HexColor("#555555"),
-        fontName='Helvetica-Bold'
-    ))
-
-    styles.add(ParagraphStyle(
-        name='Value',
-        parent=styles['Normal'],
-        fontSize=8,
-        textColor=colors.HexColor("#000000"),
-        fontName='Helvetica'
-    ))
-
-    styles.add(ParagraphStyle(
-        name='HeaderText',
-        parent=styles['Normal'],
-        fontSize=8,
-        textColor=colors.HexColor("#333333"),
-        fontName='Helvetica'
-    ))
-
-    styles.add(ParagraphStyle(
-        name='Legal',
-        parent=styles['Normal'],
-        fontSize=6,
-        textColor=colors.HexColor("#666666"),
-        fontName='Helvetica',
-        alignment=TA_LEFT,
-        leading=8
-    ))
-
-    styles.add(ParagraphStyle(
-        name='VerifyText',
-        parent=styles['Normal'],
-        fontSize=6,
-        textColor=colors.HexColor("#000000"),
-        fontName='Helvetica',
-        alignment=TA_LEFT
-    ))
-
+    styles.add(ParagraphStyle(name='TDMTitle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=TDM_GREEN, fontName='Helvetica-Bold', alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name='TDMLabel', parent=styles['Normal'], fontSize=8, textColor=colors.gray, fontName='Helvetica-Bold'))
+    styles.add(ParagraphStyle(name='TDMValue', parent=styles['Normal'], fontSize=9, textColor=colors.black, fontName='Helvetica'))
+    styles.add(ParagraphStyle(name='TDMSection', parent=styles['Heading2'], fontSize=12, textColor=TDM_GREEN, fontName='Helvetica-Bold', spaceAfter=10))
+    styles.add(ParagraphStyle(name='TDMLegal', parent=styles['Normal'], fontSize=7, textColor=colors.gray, fontName='Helvetica'))
+    styles.add(ParagraphStyle(name='TDMDisclaimer', parent=styles['Normal'], fontSize=8, textColor=TDM_GREEN, fontName='Helvetica-Bold', alignment=TA_CENTER))
     return styles
 
+def format_val(val, suffix="", min_val=0, max_val=100):
+    if isinstance(val, bool) or val is None or not isinstance(val, (int, float)) or math.isnan(val) or math.isinf(val) or val < min_val or val > max_val:
+        return "N/A"
+    return f"{val}{suffix}"
 
-# ---------- PDF GENERATION ----------
-def generate_eudr_pdf(
-    audit_id,
-    name,
-    lat,
-    lon,
-    risk_score,
-    risk_level,
-    eudr_compliant,
-    tree_cover,
-    loss_year,
-    source="unknown",
-    polygon_points=None
-):
-    print("=" * 40)
-    print("📄 PDF GENERATION START")
-    print(f"📌 AUDIT: {audit_id}")
-    print(f"🏷️ FARM: {name}")
-    print(f"📡 SOURCE: {source}")
-    print(f"📐 POLYGON POINTS: {polygon_points is not None}")
-    print("=" * 40)
-
-    file_path = f"/tmp/{audit_id}.pdf"
-    doc = SimpleDocTemplate(
-        file_path,
-        leftMargin=1.5*cm,
-        rightMargin=1.5*cm,
-        topMargin=1.5*cm,
-        bottomMargin=1.5*cm
-    )
+def format_loss_year(val):
+    if isinstance(val, bool) or val is None or not isinstance(val, (int, float)):
+        return "N/A"
+    if not math.isfinite(val) or not float(val).is_integer():
+        return "N/A"
     
+    year = int(val)
+    if year == 0:
+        return "No loss detected"
+    elif 2001 <= year <= 2023:
+        return str(year)
+    else:
+        return "N/A"
+
+def get_loss_display(status, loss_year):
+    """Fonction isolée pour être testable unitairement."""
+    if status in ("INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE", "UNKNOWN STATUS"):
+        return "N/A"
+    return format_loss_year(loss_year)
+
+def calculate_geometry(polygon_points):
+    if not polygon_points or len(polygon_points) < 3:
+        return "N/A", "N/A"
+    try:
+        poly = Polygon(polygon_points)
+        if not poly.is_valid:
+            return "Invalid geometry", "N/A"
+        centroid = poly.centroid
+        geod = Geod(ellps="WGS84")
+        area_sq_m, _ = geod.geometry_area_perimeter(poly)
+        return f"{centroid.y:.6f}, {centroid.x:.6f}", f"{abs(area_sq_m) / 10000.0:.2f} ha"
+    except:
+        return "Calculation error", "N/A"
+
+def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown"):
+    
+    temp_id = uuid.uuid4().hex
+    file_path = f"/tmp/{audit_id}_{temp_id}.pdf"
+    qr_path = f"/tmp/{audit_id}_{temp_id}_qr.png"
+    
+    doc = SimpleDocTemplate(file_path, leftMargin=2*cm, rightMargin=2*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
     styles = get_custom_styles()
     content = []
     
-    source_label = get_source_label(source)
-    status_color = get_status_color(eudr_compliant)
-    current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
-    current_date_short = datetime.now().strftime("%d/%m/%Y")
-    
+    current_date = datetime.now().strftime("%d %b %Y – %H:%M")
     signature = sign_audit(audit_id)
     verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
-    verify_url_no_sig = f"{BASE_URL}/eudr/verify/{audit_id}"
+
+    safe_name = html.escape(str(name))
+    safe_id = html.escape(str(audit_id))
     
-    # ---------- QR CODE ----------
-    qr_path = f"/tmp/{audit_id}_qr.png"
-    qr_image = None
-    try:
-        qr = qrcode.make(verify_url)
-        qr.save(qr_path)
-        qr_image = Image(qr_path, width=60, height=60)
-        print("✅ QR CODE GENERATED")
-    except Exception as e:
-        print("❌ QR ERROR:", str(e))
+    valid_statuses = ["NO POST-2020 LOSS DETECTED", "BELOW TDM SCREENING THRESHOLD", "POTENTIAL LOSS SIGNAL", "INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE"]
+    safe_status = html.escape(str(eudr_status)) if eudr_status in valid_statuses else "UNKNOWN STATUS"
+
+    qrcode.make(verify_url).save(qr_path)
+    qr_img = Image(qr_path, width=60, height=60)
+    logo_data = get_logo()
+    logo_img = Image(logo_data, width=80, height=65) if logo_data else Paragraph("TDM", styles['TDMTitle'])
     
-    # ---------- HEADER ----------
-    logo = get_logo()
-    logo_img = None
-    if logo:
-        try:
-            logo_img = Image(logo, width=90, height=73)
-        except Exception as e:
-            print("❌ LOGO ERROR WHEN CREATING PDF IMAGE:", str(e))
-    
-    total_width = doc.width
-    col_left = total_width * 0.20
-    col_center = total_width * 0.60
-    col_right = total_width * 0.20
-    header_cols = [col_left, col_center, col_right]
-    
-    row1 = []
-    if logo_img:
-        row1.append(logo_img)
-    else:
-        row1.append(Paragraph("TIERRAS DE MONTAÑA", styles["Title"]))
-    
-    row1.append(Paragraph("EUDR TRACEABILITY REPORT", styles["TitleHeader"]))
-    
-    if qr_image:
-        row1.append(qr_image)
-    else:
-        row1.append(Paragraph("", styles["HeaderText"]))
-    
-    company_text = "Sarah Jo SAS • NIT: 900693208-2 • contact@tierrasdemontana.com"
-    row2 = [
-        Paragraph(company_text, styles["CompanyInfo"]),
-        Paragraph("", styles["CompanyInfo"]),
-        Paragraph("Check with QR", styles["CompanyInfo"])
-    ]
-    
-    header_data = [row1, row2]
-    header_table = Table(header_data, colWidths=header_cols)
-    header_table.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (0, -1), "LEFT"),
-        ("ALIGN", (1, 0), (1, -1), "CENTER"),
-        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-    ]))
+    header_data = [[logo_img, Paragraph("EUDR TERRITORIAL TRACEABILITY<br/>& DUE DILIGENCE SUPPORT REPORT", styles['TDMTitle']), qr_img]]
+    header_table = Table(header_data, colWidths=[3*cm, 11*cm, 3*cm])
+    header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('ALIGN', (0,0), (0,0), 'LEFT'), ('ALIGN', (1,0), (1,0), 'CENTER'), ('ALIGN', (2,0), (2,0), 'RIGHT')]))
     content.append(header_table)
-    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd")))
-    content.append(Spacer(1, 0.2*cm))
+    content.append(Spacer(1, 0.5*cm))
+
+    centroid_str, area_str = calculate_geometry(polygon_points) if polygon_points else (f"{lat:.6f}, {lon:.6f}", "N/A")
     
-    # ---------- STATUS + SOURCE ----------
-    status_data = [
-        [
-            Paragraph("Status", styles["Label"]),
-            Paragraph(f'<font color="{status_color}"><b>{eudr_compliant}</b></font>', styles["Value"]),
-            Paragraph("Source", styles["Label"]),
-            Paragraph(source_label, styles["Value"]),
-            Paragraph("Date", styles["Label"]),
-            Paragraph(current_date_short, styles["Value"])
-        ]
+    id_data = [
+        [Paragraph("Report ID", styles['TDMLabel']), Paragraph("Generated on", styles['TDMLabel']), Paragraph("Producer / Farm", styles['TDMLabel']), Paragraph("Centroid", styles['TDMLabel'])],
+        [Paragraph(safe_id, styles['TDMValue']), Paragraph(current_date, styles['TDMValue']), Paragraph(safe_name, styles['TDMValue']), Paragraph(centroid_str, styles['TDMValue'])]
     ]
-    status_cols = [1.8*cm, 2.8*cm, 1.8*cm, 3.5*cm, 1.5*cm, 2.2*cm]
-    status_table = Table(status_data, colWidths=status_cols)
-    status_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f5f5")),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    content.append(status_table)
-    content.append(Spacer(1, 0.2*cm))
+    id_table = Table(id_data, colWidths=[4*cm, 4*cm, 4*cm, 4*cm])
+    id_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('BOTTOMPADDING', (0,0), (-1,0), 2)]))
+    content.append(id_table)
+    content.append(Spacer(1, 0.5*cm))
+
+    map_box = Table([[Paragraph(f"Total Area: {area_str}<br/>Boundary points: {len(polygon_points) if polygon_points else 'Point mode'}", styles['TDMValue'])]], colWidths=[17*cm], rowHeights=[3*cm])
+    map_box.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), TDM_LIGHT_GREEN), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BOX', (0,0), (-1,-1), 1, TDM_GREEN)]))
+    content.append(map_box)
+    content.append(Spacer(1, 0.5*cm))
+
+    status_color = "#1E3A32" if "NO POST-2020" in safe_status else "#CC0000" if "POTENTIAL" in safe_status else "#888888"
     
-    # ---------- FARM DETAILS (CON SOPORTE PARA POLÍGONO Y COORDENADAS CORRECTAS) ----------
-    detail_rows = [
-        [Paragraph("Farm", styles["Label"]), Paragraph(name, styles["Value"])]
+    tc_display = format_val(tree_cover, "%", 0, 100)
+    score_display = format_val(risk_score, "", 0, 100)
+    
+    # Utilisation de la nouvelle fonction
+    loss_display = get_loss_display(safe_status, loss_year)
+
+    findings_data = [
+        [Paragraph("Tree Cover", styles['TDMLabel']), Paragraph("Last Loss", styles['TDMLabel']), Paragraph("Risk Score", styles['TDMLabel']), Paragraph("Screening Status", styles['TDMLabel'])],
+        [Paragraph(f"<b>{tc_display}</b>", styles['TDMValue']), Paragraph(f"<b>{loss_display}</b>", styles['TDMValue']), Paragraph(f"<b>{score_display}</b>", styles['TDMValue']), Paragraph(f"<font color='{status_color}'><b>{safe_status}</b></font>", styles['TDMValue'])]
     ]
+    findings_table = Table(findings_data, colWidths=[4.25*cm]*4)
+    findings_table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), TDM_GRAY), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 8), ('BOTTOMPADDING', (0,0), (-1,-1), 8), ('LINEBEFORE', (1,0), (-1,-1), 0.5, colors.lightgrey)]))
+    content.append(findings_table)
+    content.append(Spacer(1, 0.5*cm))
 
+    disclaimer_text = "<b>THIS REPORT IS A TERRITORIAL SCREENING, NOT A CERTIFICATE</b><br/>This document provides a technical traceability and documentation support report. It is not a certificate of compliance with the EU Deforestation Regulation (EUDR) and does not replace the legal Due Diligence required by the operator or the relevant authorities."
+    disclaimer = Table([[Paragraph(disclaimer_text, styles['TDMDisclaimer'])]], colWidths=[17*cm])
+    disclaimer.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), TDM_LIGHT_GREEN), ('BOX', (0,0), (-1,-1), 1, TDM_GREEN), ('TOPPADDING', (0,0), (-1,-1), 10), ('BOTTOMPADDING', (0,0), (-1,-1), 10)]))
+    content.append(disclaimer)
+
+    content.append(PageBreak())
+    content.append(Paragraph("TECHNICAL ASSESSMENT ANNEX", styles['TDMSection']))
+    content.append(Spacer(1, 0.3*cm))
+    
+    source_desc = "Google Earth Engine (Hansen)" if source == "ee" else "Global Forest Watch" if source == "gfw" else "Analysis Unavailable"
+    
+    period_text = ""
+    if source == "ee" and dataset_version == EXPECTED_DATASET:
+        period_text = "• Dataset Coverage: 2001–2023<br/>"
+    
+    method_text = f"<b>Data & Methodology</b><br/>• Data Source: {html.escape(source_desc)}<br/>• Dataset Version: {html.escape(str(dataset_version))}<br/>{period_text}• EUDR Reference Date: 31 Dec 2020<br/>• Spatial Resolution: 30m (when applicable)<br/><br/><i>Note: This report is a general agricultural territorial screening. It does not certify compliance with EUDR, which only applies to specific commodities and operators.</i>"
+    content.append(Paragraph(method_text, styles['TDMValue']))
+    content.append(Spacer(1, 0.5*cm))
+    
     if polygon_points and len(polygon_points) >= 3:
-        detail_rows.append([
-            Paragraph("Latitude", styles["Label"]),
-            Paragraph("Multiple (see polygon below)", styles["Value"])
-        ])
-        detail_rows.append([
-            Paragraph("Longitude", styles["Label"]),
-            Paragraph("Multiple (see polygon below)", styles["Value"])
-        ])
-    else:
-        detail_rows.append([
-            Paragraph("Latitude", styles["Label"]),
-            Paragraph(f"{lat:.6f}", styles["Value"])
-        ])
-        detail_rows.append([
-            Paragraph("Longitude", styles["Label"]),
-            Paragraph(f"{lon:.6f}", styles["Value"])
-        ])
-
-    detail_rows.extend([
-        [Paragraph("Tree Cover", styles["Label"]), Paragraph(f"{tree_cover}%", styles["Value"])],
-        [Paragraph("Loss Year", styles["Label"]), Paragraph(str(loss_year) if loss_year > 0 else "N/A", styles["Value"])],
-        [Paragraph("Risk Score", styles["Label"]), Paragraph(str(risk_score), styles["Value"])],
-        [Paragraph("Risk Level", styles["Label"]), Paragraph(risk_level, styles["Value"])]
-    ])
-
-    # Si hay polígono, añadir lista de puntos (OMITIENDO EL DUPLICADO DE CIERRE)
-    if polygon_points and len(polygon_points) >= 3:
-        detail_rows.append([
-            Paragraph("Polygon Points", styles["Label"]),
-            Paragraph("", styles["Value"])
-        ])
+        content.append(Paragraph("Geospatial Data (Polygon)", styles['TDMSection']))
+        content.append(Paragraph(f"Centroid: {centroid_str} | Area: {area_str}", styles['TDMValue']))
+        content.append(Spacer(1, 0.2*cm))
         
-        # Si el polígono está cerrado (el último punto es igual al primero),
-        # mostramos todos excepto el último para no duplicar visualmente.
+        poly_data = [[Paragraph("Point", styles['TDMLabel']), Paragraph("Latitude", styles['TDMLabel']), Paragraph("Longitude", styles['TDMLabel'])]]
         display_points = polygon_points[:-1] if polygon_points[0] == polygon_points[-1] else polygon_points
+        for i, (p_lon, p_lat) in enumerate(display_points[:30], start=1):
+            poly_data.append([Paragraph(str(i), styles['TDMValue']), Paragraph(f"{p_lat:.6f}", styles['TDMValue']), Paragraph(f"{p_lon:.6f}", styles['TDMValue'])])
+            
+        poly_table = Table(poly_data, colWidths=[2*cm, 5*cm, 5*cm])
+        poly_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey), ('BACKGROUND', (0,0), (-1,0), TDM_GRAY)]))
+        content.append(poly_table)
         
-        for i, (p_lon, p_lat) in enumerate(display_points, start=1):
-            detail_rows.append([
-                Paragraph(f"  Point {i}", styles["Label"]),
-                Paragraph(f"Lat: {p_lat:.6f}, Lon: {p_lon:.6f}", styles["Value"])
-            ])
-
-    detail_cols = [doc.width * 0.30, doc.width * 0.70]
-    detail_table = Table(detail_rows, colWidths=detail_cols)
-    detail_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fafafa")),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
-        ("ALIGN", (1, 0), (1, -1), "LEFT"),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-    ]))
-    content.append(detail_table)
-    content.append(Spacer(1, 0.2*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
-    content.append(Spacer(1, 0.1*cm))
+        if len(display_points) > 30:
+            content.append(Spacer(1, 0.2*cm))
+            content.append(Paragraph(f"Note: {len(display_points) - 30} additional points are not displayed due to space constraints.", styles['TDMLegal']))
     
-    # ---------- RISK LEGEND ----------
-    legend_data = [
-        [
-            Paragraph("Low (0-30)", styles["HeaderText"]),
-            Paragraph("Medium (31-70)", styles["HeaderText"]),
-            Paragraph("High (71-100)", styles["HeaderText"])
-        ]
-    ]
-    legend_cols = [doc.width / 3.0] * 3
-    legend_table = Table(legend_data, colWidths=legend_cols)
-    legend_table.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#e8f5e9")),
-        ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#fff8e1")),
-        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#ffebee")),
-    ]))
-    content.append(legend_table)
-    content.append(Spacer(1, 0.05*cm))
-    content.append(Paragraph(
-        "Criteria: Tree Cover > 30% + Loss Year > 2020 = High Risk",
-        styles["Legal"]
-    ))
-    content.append(Spacer(1, 0.1*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
-    content.append(Spacer(1, 0.1*cm))
+    content.append(Spacer(1, 1*cm))
+    content.append(Paragraph(f"Verify at: {html.escape(verify_url)}", styles['TDMLegal']))
     
-    # ---------- VERIFICATION ----------
-    signature_short = signature[:32] + "..."
-    verify_data = [
-        [Paragraph(f"Verify: {verify_url_no_sig}", styles["VerifyText"])],
-        [Paragraph(f"Signature: {signature_short}", styles["VerifyText"])]
-    ]
-    verify_table = Table(verify_data, colWidths=[doc.width])
-    verify_table.setStyle(TableStyle([
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    content.append(verify_table)
-    content.append(Spacer(1, 0.1*cm))
-    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#dddddd")))
-    content.append(Spacer(1, 0.1*cm))
-    
-    # ---------- LEGAL NOTICES ----------
-    legal_lines = [
-        "EUDR (EU) 2023/1115",
-        "OECD Due Diligence Guidance",
-        "Law 1581/2012 (Colombia)",
-        "GDPR EU 2016/679",
-        "Report generated from satellite data.",
-        "Tierras de Montaña is not responsible for decisions made based on this report."
-    ]
-    for line in legal_lines:
-        content.append(Paragraph(line, styles["Legal"]))
-        content.append(Spacer(1, 0.03*cm))
-    
-    content.append(Spacer(1, 0.05*cm))
-    content.append(Paragraph(f"Generated on {current_date}", styles["Legal"]))
-    content.append(Spacer(1, 0.03*cm))
-    content.append(Paragraph(f"Audit ID: {audit_id}", styles["Legal"]))
-    
-    # ---------- BUILD PDF ----------
-    print("📄 BUILDING PDF...")
     doc.build(content)
-    print("✅ PDF BUILT")
     
-    # Cleanup
-    try:
-        if os.path.exists(qr_path):
-            os.remove(qr_path)
-            print("🧹 QR CLEANED")
-    except Exception as e:
-        print("⚠️ QR CLEANUP ERROR:", str(e))
+    try: os.remove(qr_path)
+    except: pass
     
-    print(f"📁 PDF RETURN: {file_path}")
     return file_path
