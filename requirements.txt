@@ -8,3 +8,4 @@ earthengine-api
 shapely
 pyproj
 slowapi
+httpx
