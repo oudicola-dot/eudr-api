@@ -61,7 +61,6 @@ def format_loss_year(val):
         return "N/A"
 
 def get_loss_display(status, loss_year):
-    """Fonction isolée pour être testable unitairement."""
     if status in ("INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE", "UNKNOWN STATUS"):
         return "N/A"
     return format_loss_year(loss_year)
@@ -131,8 +130,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
     
     tc_display = format_val(tree_cover, "%", 0, 100)
     score_display = format_val(risk_score, "", 0, 100)
-    
-    # Utilisation de la nouvelle fonction
     loss_display = get_loss_display(safe_status, loss_year)
 
     findings_data = [
