@@ -48,7 +48,8 @@ def root():
     return {"status": "online", "service": "TDM Territorial Screening API"}
 
 async def verify_turnstile(token: str) -> bool:
-    if not token: return False
+    if not token:
+        return False
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -57,10 +58,10 @@ async def verify_turnstile(token: str) -> bool:
                 timeout=5
             )
             data = response.json()
-                    return (
-            data.get("success", False) and 
-            data.get("action") == "eudr_screening"
-        )
+            return (
+                data.get("success", False) and 
+                data.get("action") == "eudr_screening"
+            )
     except Exception:
         return False
 
