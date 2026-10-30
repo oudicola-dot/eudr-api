@@ -1,4 +1,5 @@
 import os
+import io
 import hashlib
 import qrcode
 import requests
@@ -26,19 +27,24 @@ LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
 
 # ---------- UTILITY FUNCTIONS ----------
 def get_logo():
-    path = "/tmp/tdm_logo.png"
-    if not os.path.exists(path):
-        try:
-            print("📥 DOWNLOADING LOGO...")
-            r = requests.get(LOGO_URL, timeout=8)
-            r.raise_for_status()
-            with open(path, "wb") as f:
-                f.write(r.content)
-            print("✅ LOGO SAVED:", path)
-        except Exception as e:
-            print("❌ LOGO DOWNLOAD ERROR:", str(e))
+    try:
+        print("📥 DOWNLOADING LOGO...")
+        # On ajoute un User-Agent pour éviter le blocage par WordPress
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
+        r = requests.get(LOGO_URL, timeout=8, headers=headers)
+        r.raise_for_status()
+        
+        # On vérifie que ce qu'on reçoit est bien une image
+        content_type = r.headers.get('Content-Type', '')
+        if content_type.startswith('image/'):
+            print("✅ LOGO DOWNLOADED IN MEMORY")
+            return io.BytesIO(r.content) # On garde l'image en mémoire
+        else:
+            print(f"❌ LOGO ERROR: Received {content_type} instead of an image")
             return None
-    return path
+    except Exception as e:
+        print("❌ LOGO DOWNLOAD ERROR:", str(e))
+        return None
 
 
 def get_source_label(source):
@@ -191,7 +197,7 @@ def generate_eudr_pdf(
         try:
             logo_img = Image(logo, width=90, height=73)
         except Exception as e:
-            print("❌ LOGO ERROR:", str(e))
+            print("❌ LOGO ERROR WHEN CREATING PDF IMAGE:", str(e))
     
     total_width = doc.width
     col_left = total_width * 0.20
