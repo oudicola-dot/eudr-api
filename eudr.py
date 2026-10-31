@@ -1,4 +1,4 @@
-# v3.0 - Seuil de couverture des données (10%) et validation stricte
+# v2.7 - Déplacement du diagnostic brut avant le traitement des clés
 import uuid
 import sqlite3
 import os
@@ -70,11 +70,13 @@ def init_db():
         created_at TEXT
     )
     """)
+    # MIGRATION : Ajout de dataset_version si elle n'existe pas
     c.execute("PRAGMA table_info(audits)")
     columns = [row[1] for row in c.fetchall()]
     if "dataset_version" not in columns:
         print("🔄 Migration DB : ajout de la colonne dataset_version")
         c.execute("ALTER TABLE audits ADD COLUMN dataset_version TEXT")
+    
     conn.commit()
     conn.close()
 
@@ -98,7 +100,7 @@ def compute_risk_gfw(lat: float, lon: float):
     except Exception:
         return None
 
-# ========== EARTH ENGINE API (SURFACIQUE) ==========
+# ========== EARTH ENGINE API ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
     if not EE_INITIALIZED:
         return None
@@ -114,7 +116,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
-        # 1. Calcul du Tree Cover (moyenne pondérée)
         treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
@@ -124,98 +125,79 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         
         tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
 
-        # 2. CALCUL SURFACIQUE PONDÉRÉ
-        pixel_area = ee.Image.pixelArea()
-        parcel_area_m2 = geometry.area(maxError=1).getInfo()
-
-        # Surface "valide" (couverte par la donnée lossyear)
-        valid_area_image = pixel_area.updateMask(lossyear.mask())
-        valid_area_dict = valid_area_image.reduceRegion(
-            reducer=ee.Reducer.sum(),
+        valid_pixels = lossyear.reduceRegion(
+            reducer=ee.Reducer.count().unweighted(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
-        ).getInfo()
-        valid_area_m2 = valid_area_dict.get('area', 0) if valid_area_dict else 0
+        ).get('lossyear').getInfo()
 
-        # Masque de perte post-2020 (indices 21, 22, 23)
-        post_2020_mask = lossyear.gt(20)
-        
-        # Surface de perte post-2020 en m²
-        post_2020_area_image = pixel_area.updateMask(post_2020_mask)
-        post_2020_area_dict = post_2020_area_image.reduceRegion(
-            reducer=ee.Reducer.sum(),
+        if valid_pixels is None or valid_pixels == 0 or tree_cover == -1:
+            print("⚠️ EE: Aucun pixel valide analysé ou tree_cover invalide")
+            return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
+
+        loss_hist = lossyear.reduceRegion(
+            reducer=ee.Reducer.frequencyHistogram().unweighted(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
-        ).getInfo()
-        post_2020_area_m2 = post_2020_area_dict.get('area', 0) if post_2020_area_dict else 0
+        ).get('lossyear').getInfo()
+
+        if not isinstance(loss_hist, dict) or not loss_hist:
+            print("⚠️ EE: Histogramme des pertes vide ou invalide")
+            return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
         # ===============================================
-        # 3. DIAGNOSTIC BRUT
+        # DIAGNOSTIC BRUT (Déplacé avant le traitement)
         # ===============================================
-        print("=== TDM EARTH ENGINE AREA DIAGNOSTIC ===")
+        print("=== TDM EARTH ENGINE RAW DIAGNOSTIC ===")
         print(f"Tree cover: {treecover_val}")
-        print(f"Parcel area (geometric): {parcel_area_m2} m²")
-        print(f"Valid area (lossyear): {valid_area_m2} m²")
-        print(f"Post-2020 loss area: {post_2020_area_m2} m²")
-        print("=== END AREA DIAGNOSTIC ===")
-
+        print(f"Valid pixels: {valid_pixels}")
+        print(f"Raw loss histogram: {loss_hist}")
+        print("=== END RAW DIAGNOSTIC ===")
         # ===============================================
-        # 4. VALIDATION DE LA COUVERTURE DES DONNÉES
-        # Seuil TDM expérimental : 10 %
-        # ===============================================
-        valid_area_m2 = valid_area_m2 or 0
-        parcel_area_m2 = parcel_area_m2 or 0
-        
-        coverage_pct = (
-            valid_area_m2 / parcel_area_m2 * 100
-            if parcel_area_m2 > 0
-            else 0
-        )
-        
-        print("=== TDM EARTH ENGINE AREA VALIDATION ===")
-        print(f"Parcel area: {parcel_area_m2} m²")
-        print(f"Valid area: {valid_area_m2} m²")
-        print(f"Data coverage: {coverage_pct:.4f}%")
-        print("Minimum required coverage: 10.0%")
-        print("=== END AREA VALIDATION ===")
 
-        if (
-            valid_area_m2 <= 0
-            or parcel_area_m2 <= 0
-            or tree_cover == -1
-            or coverage_pct < 10.0
-        ):
-            print("⚠️ TDM: Insufficient valid data coverage")
-            return {
-                "tree_cover": tree_cover,
-                "loss_percentage": -1,
-                "last_loss_year": -1,
-                "source": "ee",
-                "insufficient_data": True
-            }
+        try:
+            histogram_pixels = 0
+            post_2020_pixels = 0
+            last_loss_year = 0
 
-        # ===============================================
-        # 5. CALCUL DU POURCENTAGE DE PERTE
-        # ===============================================
-        loss_percentage = (post_2020_area_m2 / valid_area_m2) * 100
+            for year_str, count in loss_hist.items():
+                count_float = float(count)
+                if not math.isfinite(count_float) or count_float < 0:
+                    raise ValueError("Invalid count")
+                
+                # Gestion stricte de la clé 'null' ou None
+                if year_str is None or str(year_str).strip().lower() in ("null", "none", ""):
+                    raise ValueError(f"Null year bucket returned by Earth Engine: count={count}")
+                
+                year_int = int(year_str)
+                if year_int < 0 or year_int > 23:
+                    raise ValueError("Invalid year")
+                
+                histogram_pixels += count_float
+                if year_int > 20:
+                    post_2020_pixels += count_float
+                if year_int > last_loss_year:
+                    last_loss_year = year_int
 
-        # 6. DÉTECTION DE LA DERNIÈRE ANNÉE DE PERTE
-        last_loss_year = 0
-        if post_2020_area_m2 > 0:
-            lossyear_weighted = lossyear.updateMask(post_2020_mask).reduceRegion(
-                reducer=ee.Reducer.max(),
-                geometry=geometry,
-                scale=30,
-                maxPixels=1e9
-            ).getInfo()
-            if lossyear_weighted and lossyear_weighted.get('lossyear') is not None:
-                last_loss_year = int(lossyear_weighted.get('lossyear'))
+            # Diagnostic détaillé (après traitement)
+            print("=== TDM EARTH ENGINE DIAGNOSTIC ===")
+            print(f"Histogram total: {histogram_pixels}")
+            print(f"Difference: {abs(histogram_pixels - valid_pixels)}")
+            print(f"Post-2020 pixels: {post_2020_pixels}")
+            print(f"Last loss year index: {last_loss_year}")
+            print("=== END DIAGNOSTIC ===")
 
-        # 7. VALIDATION FINALE
-        if not math.isfinite(loss_percentage) or loss_percentage < 0 or loss_percentage > 100:
-            print(f"⚠️ EE: Pourcentage de perte invalide: {loss_percentage}")
+            if not math.isfinite(histogram_pixels) or histogram_pixels <= 0 or abs(histogram_pixels - valid_pixels) > 0.01:
+                raise ValueError("Histogram mismatch")
+
+            loss_percentage = (post_2020_pixels / valid_pixels * 100)
+            if not math.isfinite(loss_percentage) or loss_percentage < 0 or loss_percentage > 100:
+                raise ValueError("Invalid percentage")
+
+        except (TypeError, ValueError) as e:
+            print(f"⚠️ EE: Erreur lors du traitement de l'histogramme : {e}")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
         return {
