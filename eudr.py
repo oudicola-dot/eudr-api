@@ -132,9 +132,22 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             maxPixels=1e9
         ).get('lossyear').getInfo()
 
-        if valid_pixels is None or valid_pixels == 0 or tree_cover == -1:
-            print("⚠️ EE: Aucun pixel valide analysé ou tree_cover invalide")
-            return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
+                if valid_pixels is None or valid_pixels == 0 or tree_cover == -1:
+            print("=== TDM EARTH ENGINE EARLY EXIT ===")
+            print(f"Tree cover: {treecover_val}")
+            print(f"Converted tree cover: {tree_cover}")
+            print(f"Valid pixels: {valid_pixels}")
+            print(f"Valid pixels type: {type(valid_pixels).__name__}")
+            print(f"Tree cover invalid: {tree_cover == -1}")
+            print("Reason: EARLY EXIT BEFORE LOSS HISTOGRAM")
+            print("=== END EARLY EXIT ===")
+            return {
+                "tree_cover": tree_cover,
+                "loss_percentage": -1,
+                "last_loss_year": -1,
+                "source": "ee",
+                "insufficient_data": True
+            }
 
         loss_hist = lossyear.reduceRegion(
             reducer=ee.Reducer.frequencyHistogram().unweighted(),
