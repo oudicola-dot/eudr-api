@@ -125,8 +125,9 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         
         tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
 
+        # MODIFICATION 1 : Ajout de .unweighted() sur count()
         valid_pixels = lossyear.reduceRegion(
-            reducer=ee.Reducer.count(),
+            reducer=ee.Reducer.count().unweighted(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
@@ -136,8 +137,9 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             print("⚠️ EE: Aucun pixel valide analysé ou tree_cover invalide")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
+        # MODIFICATION 2 : Ajout de .unweighted() sur frequencyHistogram()
         loss_hist = lossyear.reduceRegion(
-            reducer=ee.Reducer.frequencyHistogram(),
+            reducer=ee.Reducer.frequencyHistogram().unweighted(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
