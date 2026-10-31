@@ -1,4 +1,5 @@
 # v2.7 - Déplacement du diagnostic brut avant le traitement des clés
+# + Livrable 0.1 - Marqueur de build
 import uuid
 import sqlite3
 import os
@@ -12,6 +13,12 @@ from security import sign_audit
 DB_PATH = "eudr.db"
 GFW_API_KEY = os.getenv("GFW_API_KEY")
 DATASET_VERSION = "Hansen Global Forest Change 2023 v1.11 (2000-2023)"
+
+# ========== BUILD IDENTIFIER ==========
+_BUILD_COMMIT = os.getenv("RENDER_GIT_COMMIT", "dev-local")
+BUILD_VERSION = "v2.7+" + (_BUILD_COMMIT[:7] if _BUILD_COMMIT != "dev-local" else "dev-local")
+print(f"🚀 eudr.py START — build={BUILD_VERSION} — dataset={DATASET_VERSION}")
+# =====================================
 
 # ========== EARTH ENGINE INITIALIZATION ==========
 EE_PROJECT = os.getenv("EE_PROJECT", "superb-gear-473018-k1")
@@ -216,7 +223,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
     result = compute_risk_ee(lat, lon, polygon)
     if result:
         if result.get("insufficient_data"):
-            return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", "tree_cover": result["tree_cover"], "loss_year": -1, "source": result["source"], "dataset_version": DATASET_VERSION}
+            return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", "tree_cover": result["tree_cover"], "loss_year": -1, "source": result["source"], "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION}
 
         loss_pct = result["loss_percentage"]
         
@@ -227,13 +234,13 @@ def compute_risk(lat: float, lon: float, polygon=None):
         else:
             risk_score, risk_level, status = 0, "LOW", "NO POST-2020 LOSS DETECTED"
             
-        return {"risk_score": risk_score, "risk_level": risk_level, "eudr_status": status, "tree_cover": result["tree_cover"], "loss_year": result["last_loss_year"], "source": result["source"], "dataset_version": DATASET_VERSION}
+        return {"risk_score": risk_score, "risk_level": risk_level, "eudr_status": status, "tree_cover": result["tree_cover"], "loss_year": result["last_loss_year"], "source": result["source"], "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION}
 
     result = compute_risk_gfw(lat, lon)
     if result:
-        return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", "tree_cover": result["tree_cover"], "loss_year": -1, "source": result["source"], "dataset_version": DATASET_VERSION}
+        return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", "tree_cover": result["tree_cover"], "loss_year": -1, "source": result["source"], "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION}
 
-    return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "ANALYSIS UNAVAILABLE", "tree_cover": -1, "loss_year": -1, "source": "fallback", "dataset_version": DATASET_VERSION}
+    return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "ANALYSIS UNAVAILABLE", "tree_cover": -1, "loss_year": -1, "source": "fallback", "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION}
 
 # ========== AUDIT FUNCTIONS ==========
 def create_audit(name: str, lat: float, lon: float, polygon=None):
