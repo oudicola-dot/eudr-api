@@ -33,6 +33,7 @@ import eudr  # Accès à eudr.EE_INITIALIZED
 # DÉPENDANCES OPTIONNELLES
 # ==========================================
 
+# Sécurité Pillow (fallback logo)
 try:
     from PIL import Image as PILImage, ImageDraw, ImageFont
     HAS_PIL = True
@@ -41,6 +42,7 @@ except ImportError:
     HAS_PIL = False
 
 
+# Earth Engine — déjà importé par eudr.py
 try:
     import ee
     HAS_EE = True
@@ -70,6 +72,38 @@ TDM_LIGHT_GREEN = colors.HexColor("#E8F2E8")
 TDM_GRAY = colors.HexColor("#F5F5F5")
 
 _EE_CONFIRMED = False
+
+
+# ==========================================
+# PRESETS DE CADRAGE SATELLITE
+# ==========================================
+
+IMAGE_PRESETS = {
+    "standard": {
+        "parcel_buffer_m": 250,
+        "parcel_size": (1400, 850),
+        "context_buffer_m": 2500,
+        "context_size": (1800, 1100),
+    },
+    "zoom": {
+        "parcel_buffer_m": 100,
+        "parcel_size": (1400, 850),
+        "context_buffer_m": 1500,
+        "context_size": (1800, 1100),
+    },
+    "wide": {
+        "parcel_buffer_m": 500,
+        "parcel_size": (1400, 850),
+        "context_buffer_m": 4000,
+        "context_size": (1800, 1100),
+    },
+}
+
+DEFAULT_PRESET = "standard"
+
+def resolve_preset(name):
+    """Renvoie toujours un dict valide. Repli sur 'standard' si inconnu."""
+    return IMAGE_PRESETS.get(name) or IMAGE_PRESETS[DEFAULT_PRESET]
 
 
 # ==========================================
@@ -286,16 +320,6 @@ def calculate_geometry(polygon_points):
 # ==========================================
 
 def _init_ee():
-    """
-    Vérifie la disponibilité d'Earth Engine.
-
-    Source de vérité : eudr.EE_INITIALIZED.
-    Aucune authentification ici.
-    Aucun ee.Initialize().
-
-    Le cache est positif uniquement.
-    """
-
     global _EE_CONFIRMED
 
     if not HAS_PIL or not HAS_EE:
@@ -318,20 +342,14 @@ def _init_ee():
 
     try:
         ee.Number(0).getInfo()
-
         _EE_CONFIRMED = True
-
         print("✅ Étape A — Sonde EE OK.")
-
         return True
-
     except Exception as e:
-
         print(
             f"⚠️ Étape A — Sonde EE échouée : "
             f"{type(e).__name__}: {e}"
         )
-
         return False
 
 
@@ -340,13 +358,7 @@ def _init_ee():
 # ==========================================
 
 def get_territorial_context(lat, lon):
-    """
-    Nominatim reverse geocoding.
-    Les types réels sont préservés.
-    """
-
     try:
-
         headers = {
             "User-Agent": (
                 "TDM-EUDR-Screening/1.0 "
@@ -354,18 +366,12 @@ def get_territorial_context(lat, lon):
                 "contact@tierrasdemontana.com)"
             )
         }
-
         url = (
             "https://nominatim.openstreetmap.org/reverse"
             f"?format=json&lat={lat}&lon={lon}"
             "&zoom=14&addressdetails=1"
         )
-
-        r = requests.get(
-            url,
-            headers=headers,
-            timeout=5
-        )
+        r = requests.get(url, headers=headers, timeout=5)
 
         if r.status_code != 200:
             print(f"⚠️ Nominatim HTTP {r.status_code}")
@@ -374,15 +380,7 @@ def get_territorial_context(lat, lon):
         address = r.json().get("address", {})
 
         place_name = None
-
-        for key in (
-            "village",
-            "hamlet",
-            "locality",
-            "suburb",
-            "neighbourhood",
-        ):
-
+        for key in ("village", "hamlet", "locality", "suburb", "neighbourhood"):
             if address.get(key):
                 place_name = address[key]
                 break
@@ -401,12 +399,7 @@ def get_territorial_context(lat, lon):
         }
 
     except Exception as e:
-
-        print(
-            f"⚠️ Nominatim indisponible : "
-            f"{type(e).__name__}: {e}"
-        )
-
+        print(f"⚠️ Nominatim indisponible : {type(e).__name__}: {e}")
         return None
 
 
@@ -415,11 +408,6 @@ def get_territorial_context(lat, lon):
 # ==========================================
 
 def fetch_osm_places(lat, lon, radius_m=3000):
-    """
-    Overpass — node, way, relation via out center.
-    Déduplication par nom.
-    """
-
     query = f"""
     [out:json][timeout:8];
     (
@@ -431,7 +419,6 @@ def fetch_osm_places(lat, lon, radius_m=3000):
     """
 
     try:
-
         r = requests.post(
             "https://overpass-api.de/api/interpreter",
             data={"data": query},
@@ -443,35 +430,21 @@ def fetch_osm_places(lat, lon, radius_m=3000):
             return []
 
         elements = r.json().get("elements", [])
-
         raw_places = []
 
         for el in elements:
-
             tags = el.get("tags", {})
-
             if "name" not in tags or "place" not in tags:
                 continue
 
-            if (
-                el.get("type") == "node"
-                and "lat" in el
-                and "lon" in el
-            ):
-
+            if (el.get("type") == "node" and "lat" in el and "lon" in el):
                 raw_places.append({
                     "name": tags["name"],
                     "lat": el["lat"],
                     "lon": el["lon"],
                     "type": tags.get("place", "unknown"),
                 })
-
-            elif (
-                "center" in el
-                and "lat" in el["center"]
-                and "lon" in el["center"]
-            ):
-
+            elif ("center" in el and "lat" in el["center"] and "lon" in el["center"]):
                 raw_places.append({
                     "name": tags["name"],
                     "lat": el["center"]["lat"],
@@ -481,9 +454,7 @@ def fetch_osm_places(lat, lon, radius_m=3000):
 
         seen = set()
         unique = []
-
         for p in raw_places:
-
             if p["name"] not in seen:
                 seen.add(p["name"])
                 unique.append(p)
@@ -491,12 +462,7 @@ def fetch_osm_places(lat, lon, radius_m=3000):
         return unique
 
     except Exception as e:
-
-        print(
-            f"⚠️ Overpass indisponible : "
-            f"{type(e).__name__}: {e}"
-        )
-
+        print(f"⚠️ Overpass indisponible : {type(e).__name__}: {e}")
         return []
 
 
@@ -504,92 +470,27 @@ def fetch_osm_places(lat, lon, radius_m=3000):
 # RÉCUPÉRATION SENTINEL-2
 # ==========================================
 
-def _fetch_satellite_image(
-    polygon_points,
-    buffer_m,
-    image_size=(1800, 1100)
-):
+def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
     """
     Sentinel-2 via Earth Engine.
-
-    Retourne :
-      (img, info, bounds, None) en cas de succès
-      (None, None, None, error_reason) en cas d'échec
-
-    Diagnostics :
-      A. Disponibilité EE
-      A2. Construction géométrie / dates
-      B. Accès collection Sentinel-2
-      C. Construction composite
-      D. getThumbURL
-      E. Téléchargement
-      F. Décodage Pillow
-      G. Récupération des bounds
     """
 
-    # --------------------------------------
     # ÉTAPE A — DISPONIBILITÉ EE
-    # --------------------------------------
-
-    if (
-        not HAS_PIL
-        or not HAS_EE
-        or not polygon_points
-        or len(polygon_points) < 3
-    ):
-        return (
-            None,
-            None,
-            None,
-            "Prerequisites missing (Pillow/EE/polygon)",
-        )
+    if (not HAS_PIL or not HAS_EE or not polygon_points or len(polygon_points) < 3):
+        return (None, None, None, "Prerequisites missing (Pillow/EE/polygon)")
 
     if not _init_ee():
-        return (
-            None,
-            None,
-            None,
-            "Earth Engine not initialized",
-        )
+        return (None, None, None, "Earth Engine not initialized")
 
-    # --------------------------------------
     # ÉTAPE A2 — GÉOMÉTRIE ET PÉRIODE
-    # --------------------------------------
-
     try:
-
-        # Les coordonnées d'entrée sont [longitude, latitude].
-        # Conversion explicite en float.
-        ring = [
-            [
-                float(point[0]),
-                float(point[1]),
-            ]
-            for point in polygon_points
-        ]
-
-        # Fermeture explicite de l'anneau.
+        ring = [[float(point[0]), float(point[1])] for point in polygon_points]
         if ring[0] != ring[-1]:
             ring.append(ring[0])
 
-        # Construction du polygone avec un anneau explicite.
         buffered = ee.Geometry.Polygon([ring]).buffer(buffer_m)
 
-        # ======================================
-        # ÉLARGISSEMENT DU CADRAGE (PAYSAGE)
-        # ======================================
-        # EE fitte le ROI dans les dimensions demandées.
-        # Pour éviter toute déformation, on étend le ROI
-        # au ratio cible (ex. 1400×850 ≈ 1.647).
-        # Calcul en mètres (projection locale) pour un
-        # ratio correct à toutes les latitudes.
-
-        target_aspect = (
-            image_size[0] / image_size[1]
-            if image_size[1] > 0
-            else 1.0
-        )
-
+        target_aspect = (image_size[0] / image_size[1]) if image_size[1] > 0 else 1.0
         buffered_bounds = buffered.bounds().getInfo()
         bounds_ring = buffered_bounds["coordinates"][0]
 
@@ -601,7 +502,6 @@ def _fetch_satellite_image(
         center_lon = (min_lon + max_lon) / 2.0
         center_lat = (min_lat + max_lat) / 2.0
 
-        # Approximation métrique locale
         lat_rad = math.radians(center_lat)
         m_per_deg_lon = 111320.0 * math.cos(lat_rad)
         m_per_deg_lat = 110540.0
@@ -611,363 +511,103 @@ def _fetch_satellite_image(
         current_aspect = width_m / height_m
 
         if current_aspect < target_aspect:
-            # Trop étroit : on élargit horizontalement
             new_width_m = height_m * target_aspect
             new_width_deg = new_width_m / m_per_deg_lon
             min_lon = center_lon - new_width_deg / 2.0
             max_lon = center_lon + new_width_deg / 2.0
         else:
-            # Trop large : on élargit verticalement
             new_height_m = width_m / target_aspect
             new_height_deg = new_height_m / m_per_deg_lat
             min_lat = center_lat - new_height_deg / 2.0
             max_lat = center_lat + new_height_deg / 2.0
 
-        roi = ee.Geometry.Rectangle(
-            [min_lon, min_lat, max_lon, max_lat]
-        )
+        roi = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
 
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=365)
 
-        print(
-            f"🔎 Étape A2 — ROI paysage {target_aspect:.3f} : "
-            f"{len(ring)} points (fermeture incluse), "
-            f"buffer={buffer_m} m, "
-            f"bounds étendus "
-            f"[{min_lon:.4f},{min_lat:.4f} → "
-            f"{max_lon:.4f},{max_lat:.4f}]"
-        )
-
-        print(
-            "🔎 Étape A2 — Temporal window : "
-            f"{start_date.strftime('%Y-%m-%d')} → "
-            f"{end_date.strftime('%Y-%m-%d')}"
-        )
-
     except Exception as e:
+        print(f"⚠️ Étape A2 — ROI build failed: {type(e).__name__}: {e}")
+        return (None, None, None, f"ROI build failed ({type(e).__name__})")
 
-        print(
-            f"⚠️ Étape A2 — ROI build failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"ROI build failed ({type(e).__name__})",
-        )
-
-    # --------------------------------------
     # ÉTAPE B — COLLECTION SENTINEL-2
-    # --------------------------------------
-
     try:
-
-        coll = (
-            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
             .filterBounds(roi)
-            .filterDate(
-                start_date.strftime("%Y-%m-%d"),
-                end_date.strftime("%Y-%m-%d"),
-            )
-        )
-
+            .filterDate(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")))
         coll_size = coll.size().getInfo()
 
-        print(
-            f"🔎 Étape B — S2 scenes on 12-month window: "
-            f"{coll_size}"
-        )
-
         if coll_size == 0:
-            return (
-                None,
-                None,
-                None,
-                "No Sentinel-2 scene on 12-month window",
-            )
-
+            return (None, None, None, "No Sentinel-2 scene on 12-month window")
     except Exception as e:
+        return (None, None, None, f"S2 collection access failed ({type(e).__name__})")
 
-        print(
-            f"⚠️ Étape B — S2 collection access failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"S2 collection access failed ({type(e).__name__})",
-        )
-
-    # --------------------------------------
     # ÉTAPE C — COMPOSITE
-    # --------------------------------------
-
     try:
-
-        clear = coll.filter(
-            ee.Filter.lt(
-                "CLOUDY_PIXEL_PERCENTAGE",
-                20
-            )
-        )
-
+        clear = coll.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
         clear_size = clear.size().getInfo()
 
-        print(
-            f"🔎 Étape C — scenes <20% cloud: "
-            f"{clear_size}"
-        )
-
         if clear_size > 0:
-
             final = clear.median()
-
-            info = (
-                f"Median composite "
-                f"{start_date.strftime('%Y-%m-%d')} → "
-                f"{end_date.strftime('%Y-%m-%d')}, "
-                f"{clear_size} scenes <20% cloud "
-                f"(global scene metric)"
-            )
-
+            info = f"Median composite {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}, {clear_size} scenes <20% cloud (global scene metric)"
         else:
-
-            best = coll.sort(
-                "CLOUDY_PIXEL_PERCENTAGE"
-            ).first()
-
-            pct = best.get(
-                "CLOUDY_PIXEL_PERCENTAGE"
-            ).getInfo()
-
-            scene_date = (
-                ee.Date(
-                    best.get("system:time_start")
-                )
-                .format("YYYY-MM-dd")
-                .getInfo()
-            )
-
+            best = coll.sort("CLOUDY_PIXEL_PERCENTAGE").first()
+            pct = best.get("CLOUDY_PIXEL_PERCENTAGE").getInfo()
+            scene_date = ee.Date(best.get("system:time_start")).format("YYYY-MM-dd").getInfo()
             final = best
-
-            info = (
-                f"Best available scene {scene_date}, "
-                f"{pct:.1f}% cloud "
-                f"(global scene metric)"
-            )
-
-        print(
-            f"🔎 Étape C — composite built: {info}"
-        )
+            info = f"Best available scene {scene_date}, {pct:.1f}% cloud (global scene metric)"
 
     except Exception as e:
+        return (None, None, None, f"Composite build failed ({type(e).__name__})")
 
-        print(
-            f"⚠️ Étape C — composite build failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"Composite build failed ({type(e).__name__})",
-        )
-
-    # --------------------------------------
     # ÉTAPE D — GÉNÉRATION DE LA VIGNETTE
-    # --------------------------------------
-
     try:
+        width_m_est = abs(max_lon - min_lon) * 111320.0 * math.cos(math.radians((min_lat + max_lat) / 2.0))
+        upsample_x = image_size[0] / (width_m_est / 10.0) if width_m_est > 0 else 1.0
+        print(f"🔎 Étape D — extent≈{width_m_est:.0f} m, upsample×{upsample_x:.1f} (10 m natif → {image_size[0]} px demandés)")
 
-        # ======================================
-        # ANTI-PIXELLISATION
-        # ======================================
-        # Les bandes B4/B3/B2 de S2 sont à 10 m natifs.
-        # Si l'étendue géographique (en mètres) est bien
-        # supérieure à image_size * 10 m, EE interpole
-        # fortement (visible en blocs). On active un
-        # rééchantillonnage bicubique pour lisser, et on
-        # loggue le facteur d'interpolation pour diagnostic.
-
-        width_m_est = abs(max_lon - min_lon) * 111320.0 * math.cos(
-            math.radians((min_lat + max_lat) / 2.0)
-        )
-        upsample_x = (
-            image_size[0] / (width_m_est / 10.0)
-            if width_m_est > 0 else 1.0
-        )
-
-        print(
-            f"🔎 Étape D — extent≈{width_m_est:.0f} m, "
-            f"upsample×{upsample_x:.1f} "
-            f"(10 m natif → {image_size[0]} px demandés)"
-        )
-
-        url = (
-            final.visualize(
-                bands=["B4", "B3", "B2"],
-                min=0,
-                max=3000,
-            )
+        url = (final.visualize(bands=["B4", "B3", "B2"], min=0, max=3000)
             .resample("bicubic")
             .getThumbURL({
                 "region": roi,
                 "dimensions": f"{image_size[0]}x{image_size[1]}",
                 "format": "png",
-            })
-        )
-
-        print("🔎 Étape D — getThumbURL OK")
-
+            }))
     except Exception as e:
+        return (None, None, None, f"getThumbURL failed ({type(e).__name__})")
 
-        print(
-            f"⚠️ Étape D — getThumbURL failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"getThumbURL failed ({type(e).__name__})",
-        )
-
-    # --------------------------------------
     # ÉTAPE E — TÉLÉCHARGEMENT
-    # --------------------------------------
-
     try:
-
-        resp = requests.get(
-            url,
-            timeout=15
-        )
-
-        print(
-            f"🔎 Étape E — HTTP {resp.status_code}, "
-            f"{len(resp.content)} bytes"
-        )
-
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-
     except Exception as e:
+        return (None, None, None, f"Download failed ({type(e).__name__})")
 
-        print(
-            f"⚠️ Étape E — download failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"Download failed ({type(e).__name__})",
-        )
-
-    # --------------------------------------
     # ÉTAPE F — DÉCODAGE PILLOW
-    # --------------------------------------
-
     try:
-
-        img = PILImage.open(
-            io.BytesIO(resp.content)
-        ).convert("RGBA")
-
-        print(
-            f"🔎 Étape F — image decoded: "
-            f"{img.size[0]}x{img.size[1]} px"
-        )
-
+        img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
     except Exception as e:
+        return (None, None, None, f"Decode failed ({type(e).__name__})")
 
-        print(
-            f"⚠️ Étape F — decode failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"Decode failed ({type(e).__name__})",
-        )
-
-    # --------------------------------------
     # ÉTAPE G — BOUNDS GEOJSON
-    # --------------------------------------
-
     try:
-
         bounds_info = roi.bounds().getInfo()
-
         if not isinstance(bounds_info, dict):
-            raise ValueError(
-                "Unexpected Earth Engine bounds response "
-                "(not a dict)"
-            )
+            raise ValueError("Unexpected EE bounds response (not a dict)")
 
         coordinates = bounds_info.get("coordinates")
-
         if not coordinates or not coordinates[0]:
-            raise ValueError(
-                "Missing coordinates in Earth Engine bounds"
-            )
+            raise ValueError("Missing coordinates in EE bounds")
 
         bounds = coordinates[0]
-
         min_lon = min(p[0] for p in bounds)
         max_lon = max(p[0] for p in bounds)
-
         min_lat = min(p[1] for p in bounds)
         max_lat = max(p[1] for p in bounds)
 
-        if (
-            max_lon <= min_lon
-            or max_lat <= min_lat
-        ):
-            raise ValueError(
-                "Invalid geographic bounds (degenerate extent)"
-            )
-
-        print(
-            "🔎 Étape G — bounds OK "
-            f"[{min_lon:.4f},{min_lat:.4f} → "
-            f"{max_lon:.4f},{max_lat:.4f}]"
-        )
-
-        return (
-            img,
-            info,
-            (
-                min_lon,
-                max_lon,
-                min_lat,
-                max_lat,
-            ),
-            None,
-        )
-
+        return (img, info, (min_lon, max_lon, min_lat, max_lat), None)
     except Exception as e:
-
-        print(
-            f"⚠️ Étape G — bounds retrieval failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            None,
-            f"Bounds retrieval failed ({type(e).__name__})",
-        )
+        return (None, None, None, f"Bounds retrieval failed ({type(e).__name__})")
 
 
 # ==========================================
@@ -975,383 +615,110 @@ def _fetch_satellite_image(
 # ==========================================
 
 def _bbox_overlap(a, b):
-    """
-    Test de chevauchement entre deux boîtes :
-    (left, top, right, bottom).
-    """
-
-    return not (
-        a[2] < b[0]
-        or b[2] < a[0]
-        or a[3] < b[1]
-        or b[3] < a[1]
-    )
+    return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
 
 
 def _nice_scale(max_m):
-    """
-    Plus grande valeur de {1, 2, 5} × 10ⁿ
-    inférieure ou égale à max_m.
-    """
-
     if not max_m or max_m <= 0:
         return 1
-
-    exp = math.floor(
-        math.log10(max_m)
-    )
-
+    exp = math.floor(math.log10(max_m))
     for mult in (5, 2, 1):
-
         val = mult * (10 ** exp)
-
         if val <= max_m:
             return int(val)
-
-    if exp > 0:
-        return int(10 ** (exp - 1))
-
-    return 1
+    return int(10 ** (exp - 1)) if exp > 0 else 1
 
 
-# ==========================================
-# DESSIN COMMUN AUX DEUX CARTES
-# ==========================================
-
-def _draw_common(
-    img,
-    polygon_points,
-    bounds,
-    scale_m,
-    places=None
-):
-    """
-    Dessine :
-      - polygone parcellaire
-      - centroïde
-      - Nord
-      - échelle
-      - villages OSM éventuels
-
-    scale_m :
-      - 100 m pour la carte parcellaire
-      - 1 000 m pour la carte de contexte
-    """
-
+def _draw_common(img, polygon_points, bounds, scale_m, places=None):
     draw = ImageDraw.Draw(img)
-
     img_w, img_h = img.size
-
     min_lon, max_lon, min_lat, max_lat = bounds
 
     def project(lon, lat):
-
-        x = (
-            (lon - min_lon)
-            / (max_lon - min_lon)
-            * img_w
-        )
-
-        y = (
-            (max_lat - lat)
-            / (max_lat - min_lat)
-            * img_h
-        )
-
+        x = (lon - min_lon) / (max_lon - min_lon) * img_w
+        y = (max_lat - lat) / (max_lat - min_lat) * img_h
         return (x, y)
 
-    # --------------------------------------
     # VILLAGES ET LOCALITÉS OSM
-    # --------------------------------------
-
     if places:
-
         try:
-
-            font = ImageFont.truetype(
-                "DejaVuSans-Bold.ttf",
-                13
-            )
-
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
         except Exception:
-
             font = ImageFont.load_default()
 
         def _prio(p):
+            return {"city": 0, "town": 1, "village": 2}.get(p.get("type"), 3)
 
-            return {
-                "city": 0,
-                "town": 1,
-                "village": 2,
-            }.get(
-                p.get("type"),
-                3
-            )
-
-        visible = [
-            p
-            for p in places
-            if (
-                min_lon <= p["lon"] <= max_lon
-                and min_lat <= p["lat"] <= max_lat
-            )
-        ]
-
+        visible = [p for p in places if (min_lon <= p["lon"] <= max_lon and min_lat <= p["lat"] <= max_lat)]
         visible.sort(key=_prio)
-
-        type_colors = {
-            "city": "#FFD700",
-            "town": "#FFA500",
-            "village": "#FFFFFF",
-        }
-
-        type_sizes = {
-            "city": 6,
-            "town": 5,
-            "village": 4,
-        }
-
+        type_colors = {"city": "#FFD700", "town": "#FFA500", "village": "#FFFFFF"}
+        type_sizes = {"city": 6, "town": 5, "village": 4}
         placed_boxes = []
 
         for place in visible:
+            px, py = project(place["lon"], place["lat"])
+            ptype = place.get("type", "village")
+            dot_color = type_colors.get(ptype, "#FFFFFF")
+            dot_r = type_sizes.get(ptype, 4)
 
-            px, py = project(
-                place["lon"],
-                place["lat"]
-            )
-
-            ptype = place.get(
-                "type",
-                "village"
-            )
-
-            dot_color = type_colors.get(
-                ptype,
-                "#FFFFFF"
-            )
-
-            dot_r = type_sizes.get(
-                ptype,
-                4
-            )
-
-            draw.ellipse(
-                [
-                    (px - dot_r, py - dot_r),
-                    (px + dot_r, py + dot_r),
-                ],
-                fill=dot_color,
-                outline="#000000",
-                width=1,
-            )
-
+            draw.ellipse([(px - dot_r, py - dot_r), (px + dot_r, py + dot_r)], fill=dot_color, outline="#000000", width=1)
+            
             try:
-
-                bbox = draw.textbbox(
-                    (0, 0),
-                    place["name"],
-                    font=font
-                )
-
-                lw = bbox[2] - bbox[0]
-                lh = bbox[3] - bbox[1]
-
+                bbox = draw.textbbox((0, 0), place["name"], font=font)
+                lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
             except Exception:
-
                 lw, lh = 60, 14
 
             candidates = [
-                (
-                    px + dot_r + 2,
-                    py - lh // 2
-                ),
-                (
-                    px - lw - dot_r - 2,
-                    py - lh // 2
-                ),
-                (
-                    px - lw // 2,
-                    py - lh - dot_r - 2
-                ),
-                (
-                    px - lw // 2,
-                    py + dot_r + 2
-                ),
+                (px + dot_r + 2, py - lh // 2),
+                (px - lw - dot_r - 2, py - lh // 2),
+                (px - lw // 2, py - lh - dot_r - 2),
+                (px - lw // 2, py + dot_r + 2),
             ]
 
             for lx, ly in candidates:
-
-                if (
-                    lx < 5
-                    or ly < 5
-                    or lx + lw > img_w - 5
-                    or ly + lh > img_h - 5
-                ):
+                if (lx < 5 or ly < 5 or lx + lw > img_w - 5 or ly + lh > img_h - 5):
                     continue
-
-                box = (
-                    lx,
-                    ly,
-                    lx + lw,
-                    ly + lh
-                )
-
-                if any(
-                    _bbox_overlap(box, ob)
-                    for ob in placed_boxes
-                ):
+                box = (lx, ly, lx + lw, ly + lh)
+                if any(_bbox_overlap(box, ob) for ob in placed_boxes):
                     continue
-
-                draw.text(
-                    (lx, ly),
-                    place["name"],
-                    fill="#FFFFFF",
-                    font=font,
-                    stroke_width=2,
-                    stroke_fill="#000000",
-                )
-
+                draw.text((lx, ly), place["name"], fill="#FFFFFF", font=font, stroke_width=2, stroke_fill="#000000")
                 placed_boxes.append(box)
-
                 break
 
-    # --------------------------------------
     # POLYGONE PARCELLAIRE
-    # --------------------------------------
-
     if polygon_points and len(polygon_points) >= 3:
-
-        coords = [
-            project(lon, lat)
-            for lon, lat in polygon_points
-        ]
-
-        draw.line(
-            coords + [coords[0]],
-            fill="#CC0000",
-            width=4,
-        )
-
+        coords = [project(lon, lat) for lon, lat in polygon_points]
+        draw.line(coords + [coords[0]], fill="#CC0000", width=4)
         try:
-
-            c = Polygon(
-                polygon_points
-            ).centroid
-
-            cx, cy = project(
-                c.x,
-                c.y
-            )
-
-            draw.ellipse(
-                [
-                    (cx - 5, cy - 5),
-                    (cx + 5, cy + 5),
-                ],
-                fill="#CC0000",
-                outline="#FFFFFF",
-                width=2,
-            )
-
+            c = Polygon(polygon_points).centroid
+            cx, cy = project(c.x, c.y)
+            draw.ellipse([(cx - 5, cy - 5), (cx + 5, cy + 5)], fill="#CC0000", outline="#FFFFFF", width=2)
         except Exception:
             pass
 
-    # --------------------------------------
     # FLÈCHE DU NORD
-    # --------------------------------------
-
     try:
-
-        draw.text(
-            (img_w - 30, 10),
-            "N",
-            fill="#FFFFFF",
-            anchor="mm",
-            stroke_width=2,
-            stroke_fill="#000000",
-        )
-
-        draw.line(
-            [
-                (img_w - 30, 20),
-                (img_w - 30, 40),
-            ],
-            fill="#FFFFFF",
-            width=2,
-        )
-
-        draw.polygon(
-            [
-                (img_w - 30, 15),
-                (img_w - 35, 25),
-                (img_w - 25, 25),
-            ],
-            fill="#FFFFFF",
-        )
-
+        draw.text((img_w - 30, 10), "N", fill="#FFFFFF", anchor="mm", stroke_width=2, stroke_fill="#000000")
+        draw.line([(img_w - 30, 20), (img_w - 30, 40)], fill="#FFFFFF", width=2)
+        draw.polygon([(img_w - 30, 15), (img_w - 35, 25), (img_w - 25, 25)], fill="#FFFFFF")
     except Exception:
         pass
 
-    # --------------------------------------
     # ÉCHELLE GRAPHIQUE
-    # --------------------------------------
-
     try:
-
-        geod = Geod(
-            ellps="WGS84"
-        )
-
-        _, _, width_m = geod.inv(
-            min_lon,
-            min_lat,
-            max_lon,
-            min_lat,
-        )
-
+        geod = Geod(ellps="WGS84")
+        _, _, width_m = geod.inv(min_lon, min_lat, max_lon, min_lat)
         width_m = abs(width_m)
-
         if width_m > 0:
-
             pixels_per_meter = img_w / width_m
-
-            max_bar_pixels = img_w - 40
-
-            max_distance_m = (
-                max_bar_pixels
-                / pixels_per_meter
-            )
-
-            cap_m = (
-                min(scale_m, max_distance_m)
-                if scale_m
-                else max_distance_m
-            )
-
+            max_distance_m = (img_w - 40) / pixels_per_meter
+            cap_m = min(scale_m, max_distance_m) if scale_m else max_distance_m
             nice_m = _nice_scale(cap_m)
-
-            x_scale = (
-                nice_m
-                * pixels_per_meter
-            )
-
-            draw.line(
-                [
-                    (10, img_h - 20),
-                    (10 + x_scale, img_h - 20),
-                ],
-                fill="#FFFFFF",
-                width=3,
-            )
-
-            draw.text(
-                (10, img_h - 35),
-                f"{nice_m} m",
-                fill="#FFFFFF",
-                stroke_width=2,
-                stroke_fill="#000000",
-            )
-
+            x_scale = nice_m * pixels_per_meter
+            
+            draw.line([(10, img_h - 20), (10 + x_scale, img_h - 20)], fill="#FFFFFF", width=3)
+            draw.text((10, img_h - 35), f"{nice_m} m", fill="#FFFFFF", stroke_width=2, stroke_fill="#000000")
     except Exception:
         pass
 
@@ -1360,62 +727,21 @@ def _draw_common(
 # CARTE PARCELLAIRE
 # ==========================================
 
-def generate_parcel_map(
-    polygon_points,
-    path
-):
-    """
-    Carte parcellaire :
-      - buffer 250 m (plus de contexte autour de
-        la parcelle → plus de pixels S2 natifs
-        → moins d'interpolation EE)
-      - échelle cible 100 m
-      - image_size 1400×850 : ratio 1.647, moins
-        d'interpolation qu'en 1800×1100 pour une
-        parcelle de taille modeste
-    """
-
-    img, info, bounds, error = _fetch_satellite_image(
-        polygon_points,
-        buffer_m=250,
-        image_size=(1400, 850),
-    )
+def generate_parcel_map(polygon_points, path, buffer_m=250, image_size=(1400, 850)):
+    img, info, bounds, error = _fetch_satellite_image(polygon_points, buffer_m=buffer_m, image_size=image_size)
 
     if img is None:
-        print(
-            f"❌ CARTE PARCELLAIRE — échec EE : {error}"
-        )
+        print(f"❌ CARTE PARCELLAIRE — échec EE : {error}")
         return None, None, error
 
     print("✅ CARTE PARCELLAIRE — image EE obtenue")
 
     try:
-
-        _draw_common(
-            img,
-            polygon_points,
-            bounds,
-            scale_m=100,
-            places=None,
-        )
-
-        img.convert("RGB").save(
-            path,
-            format="PNG"
-        )
-
+        _draw_common(img, polygon_points, bounds, scale_m=100, places=None)
+        img.convert("RGB").save(path, format="PNG")
     except Exception as e:
-
-        print(
-            f"⚠️ Étape H (parcel) — save failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            f"Save failed ({type(e).__name__})",
-        )
+        print(f"⚠️ Étape H (parcel) — save failed: {type(e).__name__}: {e}")
+        return (None, None, f"Save failed ({type(e).__name__})")
 
     return path, info, None
 
@@ -1424,65 +750,23 @@ def generate_parcel_map(
 # CARTE DE CONTEXTE TERRITORIAL
 # ==========================================
 
-def generate_context_map(
-    polygon_points,
-    lat,
-    lon,
-    path
-):
-    """
-    Carte de contexte :
-      - buffer 2 500 m
-      - échelle cible 1 000 m
-      - recherche Overpass dans un rayon de 3 000 m
-    """
-
-    img, info, bounds, error = _fetch_satellite_image(
-        polygon_points,
-        buffer_m=2500
-    )
+def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_size=(1800, 1100)):
+    img, info, bounds, error = _fetch_satellite_image(polygon_points, buffer_m=buffer_m, image_size=image_size)
 
     if img is None:
-        print(
-            f"❌ CARTE CONTEXTE — échec EE : {error}"
-        )
+        print(f"❌ CARTE CONTEXTE — échec EE : {error}")
         return None, None, error
 
     print("✅ CARTE CONTEXTE — image EE obtenue")
 
-    places = fetch_osm_places(
-        lat,
-        lon,
-        radius_m=3000
-    )
+    places = fetch_osm_places(lat, lon, radius_m=3000)
 
     try:
-
-        _draw_common(
-            img,
-            polygon_points,
-            bounds,
-            scale_m=1000,
-            places=places,
-        )
-
-        img.convert("RGB").save(
-            path,
-            format="PNG"
-        )
-
+        _draw_common(img, polygon_points, bounds, scale_m=1000, places=places)
+        img.convert("RGB").save(path, format="PNG")
     except Exception as e:
-
-        print(
-            f"⚠️ Étape H (context) — save failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        return (
-            None,
-            None,
-            f"Save failed ({type(e).__name__})",
-        )
+        print(f"⚠️ Étape H (context) — save failed: {type(e).__name__}: {e}")
+        return (None, None, f"Save failed ({type(e).__name__})")
 
     return path, info, None
 
@@ -1504,8 +788,11 @@ def generate_eudr_pdf(
     source="unknown",
     polygon_points=None,
     dataset_version="Unknown",
+    image_preset=DEFAULT_PRESET,
     **kwargs
 ):
+    preset = resolve_preset(image_preset)
+    print(f"🖼️ Image preset: {image_preset} → {preset}")
 
     temp_id = uuid.uuid4().hex
 
@@ -1517,1241 +804,256 @@ def generate_eudr_pdf(
     success = False
 
     try:
-
-        # ======================================
-        # DONNÉES DE L'AUDIT
-        # ======================================
-
         full_audit = get_audit(audit_id) or {}
-
         valid_pixels = full_audit.get("valid_pixels")
         nominal_pixels = full_audit.get("nominal_pixels_estimate")
         coverage_pct = full_audit.get("estimated_coverage_pct")
         insufficient_reason = full_audit.get("insufficient_reason")
         treecover_reason = full_audit.get("treecover_reason")
 
-        # ======================================
-        # DOCUMENT ET STYLES
-        # ======================================
-
-        doc = SimpleDocTemplate(
-            file_path,
-            leftMargin=2 * cm,
-            rightMargin=2 * cm,
-            topMargin=1.5 * cm,
-            bottomMargin=1.5 * cm,
-        )
-
+        doc = SimpleDocTemplate(file_path, leftMargin=2*cm, rightMargin=2*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
         styles = get_custom_styles()
-
         content = []
-
-        current_date = datetime.now().strftime(
-            "%d %b %Y – %H:%M"
-        )
-
-        # ======================================
-        # SIGNATURE ET VÉRIFICATION
-        # ======================================
+        current_date = datetime.now().strftime("%d %b %Y – %H:%M")
 
         signature = sign_audit(audit_id)
-
-        verify_url = (
-            f"{BASE_URL}/eudr/verify/"
-            f"{audit_id}?signature={signature}"
-        )
+        verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
 
         safe_name = html.escape(str(name))
         safe_id = html.escape(str(audit_id))
 
-        valid_statuses = [
-            "NO POST-2020 LOSS DETECTED",
-            "BELOW TDM SCREENING THRESHOLD",
-            "POTENTIAL LOSS SIGNAL",
-            "INSUFFICIENT DATA",
-            "ANALYSIS UNAVAILABLE",
-        ]
-
-        safe_status = (
-            html.escape(str(eudr_status))
-            if eudr_status in valid_statuses
-            else "UNKNOWN STATUS"
-        )
-
-        # ======================================
-        # QR CODE ET LOGO
-        # ======================================
+        valid_statuses = ["NO POST-2020 LOSS DETECTED", "BELOW TDM SCREENING THRESHOLD", "POTENTIAL LOSS SIGNAL", "INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE"]
+        safe_status = html.escape(str(eudr_status)) if eudr_status in valid_statuses else "UNKNOWN STATUS"
 
         qrcode.make(verify_url).save(qr_path)
-
-        qr_img = Image(
-            qr_path,
-            width=60,
-            height=60
-        )
-
+        qr_img = Image(qr_path, width=60, height=60)
         logo_data = get_logo()
+        logo_img = Image(logo_data, width=80, height=65) if logo_data else Paragraph("TDM", styles["TDMTitle"])
 
-        logo_img = (
-            Image(
-                logo_data,
-                width=80,
-                height=65
-            )
-            if logo_data
-            else Paragraph(
-                "TDM",
-                styles["TDMTitle"]
-            )
-        )
-
-        # ======================================
-        # EN-TÊTE DU RAPPORT
-        # ======================================
-
-        header_data = [[
-            logo_img,
-
-            Paragraph(
-                "EUDR TERRITORIAL TRACEABILITY<br/>"
-                "&amp; DUE DILIGENCE SUPPORT REPORT",
-                styles["TDMTitle"]
-            ),
-
-            qr_img,
-        ]]
-
-        header_table = Table(
-            header_data,
-            colWidths=[
-                3 * cm,
-                11 * cm,
-                3 * cm,
-            ],
-        )
-
-        header_table.setStyle(
-            TableStyle([
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "MIDDLE",
-                ),
-                (
-                    "ALIGN",
-                    (0, 0),
-                    (0, 0),
-                    "LEFT",
-                ),
-                (
-                    "ALIGN",
-                    (1, 0),
-                    (1, 0),
-                    "CENTER",
-                ),
-                (
-                    "ALIGN",
-                    (2, 0),
-                    (2, 0),
-                    "RIGHT",
-                ),
-            ])
-        )
-
+        header_data = [[logo_img, Paragraph("EUDR TERRITORIAL TRACEABILITY<br/>&amp; DUE DILIGENCE SUPPORT REPORT", styles["TDMTitle"]), qr_img]]
+        header_table = Table(header_data, colWidths=[3*cm, 11*cm, 3*cm])
+        header_table.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("ALIGN", (0,0), (0,0), "LEFT"), ("ALIGN", (1,0), (1,0), "CENTER"), ("ALIGN", (2,0), (2,0), "RIGHT")]))
         content.append(header_table)
-
-        content.append(
-            Spacer(1, 0.5 * cm)
-        )
-
-        # ======================================
-        # GÉOMÉTRIE ET SUPERFICIE
-        # ======================================
+        content.append(Spacer(1, 0.5 * cm))
 
         if polygon_points:
-
-            centroid_str, area_str = calculate_geometry(
-                polygon_points
-            )
-
+            centroid_str, area_str = calculate_geometry(polygon_points)
         elif lat is not None and lon is not None:
-
             centroid_str = f"{lat:.6f}, {lon:.6f}"
             area_str = "N/A"
-
         else:
-
             centroid_str = "N/A"
             area_str = "N/A"
 
-        display_point_count = (
-            len(polygon_points) - 1
-            if (
-                polygon_points
-                and len(polygon_points) >= 2
-                and polygon_points[0] == polygon_points[-1]
-            )
-            else (
-                len(polygon_points)
-                if polygon_points
-                else None
-            )
-        )
-
-        # ======================================
-        # IDENTIFICATION DE L'AUDIT
-        # ======================================
+        display_point_count = (len(polygon_points) - 1 if (polygon_points and len(polygon_points) >= 2 and polygon_points[0] == polygon_points[-1]) else (len(polygon_points) if polygon_points else None))
 
         id_data = [
-
-            [
-                Paragraph(
-                    "Report ID",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Generated on",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Producer / Farm",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Centroid",
-                    styles["TDMLabel"]
-                ),
-            ],
-
-            [
-                Paragraph(
-                    safe_id,
-                    styles["TDMValue"]
-                ),
-
-                Paragraph(
-                    current_date,
-                    styles["TDMValue"]
-                ),
-
-                Paragraph(
-                    safe_name,
-                    styles["TDMValue"]
-                ),
-
-                Paragraph(
-                    centroid_str,
-                    styles["TDMValue"]
-                ),
-            ],
+            [Paragraph("Report ID", styles["TDMLabel"]), Paragraph("Generated on", styles["TDMLabel"]), Paragraph("Producer / Farm", styles["TDMLabel"]), Paragraph("Centroid", styles["TDMLabel"])],
+            [Paragraph(safe_id, styles["TDMValue"]), Paragraph(current_date, styles["TDMValue"]), Paragraph(safe_name, styles["TDMValue"]), Paragraph(centroid_str, styles["TDMValue"])],
         ]
-
-        id_table = Table(
-            id_data,
-            colWidths=[
-                4 * cm,
-                4 * cm,
-                4 * cm,
-                4 * cm,
-            ],
-        )
-
-        id_table.setStyle(
-            TableStyle([
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "TOP",
-                ),
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, 0),
-                    2,
-                ),
-            ])
-        )
-
+        id_table = Table(id_data, colWidths=[4*cm]*4)
+        id_table.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("BOTTOMPADDING", (0,0), (-1,0), 2)]))
         content.append(id_table)
-
-        content.append(
-            Spacer(1, 0.5 * cm)
-        )
+        content.append(Spacer(1, 0.5 * cm))
 
         # ======================================
         # CARTE PARCELLAIRE
         # ======================================
-
         if polygon_points and len(polygon_points) >= 3:
-
-            parcel_map, parcel_info, parcel_err = (
-                generate_parcel_map(
-                    polygon_points,
-                    parcel_path
-                )
+            parcel_map, parcel_info, parcel_err = generate_parcel_map(
+                polygon_points,
+                parcel_path,
+                buffer_m=preset["parcel_buffer_m"],
+                image_size=preset["parcel_size"]
             )
-
         else:
-
-            parcel_map = None
-            parcel_info = None
-            parcel_err = "No polygon"
+            parcel_map, parcel_info, parcel_err = None, None, "No polygon"
 
         parcel_inserted = False
-
-        if (
-            parcel_map
-            and os.path.exists(parcel_map)
-        ):
-
+        if (parcel_map and os.path.exists(parcel_map)):
             try:
-
                 with PILImage.open(parcel_map) as src:
                     w, h = src.size
-
-                # Format paysage : largeur fixe 17 cm,
-                # hauteur déduite du ratio réel de l'image.
+                
                 display_w = 17 * cm
                 display_h = display_w * h / w
-
-                # Garde-fou : ne pas dépasser 12 cm de haut
                 if display_h > 12 * cm:
                     display_h = 12 * cm
                     display_w = display_h * w / h
 
-                content.append(
-                    Image(
-                        parcel_map,
-                        width=display_w,
-                        height=display_h,
-                    )
-                )
-
-                print(
-                    f"✅ CARTE PARCELLAIRE — insérée dans le PDF "
-                    f"({display_w/cm:.2f} cm × {display_h/cm:.2f} cm)"
-                )
+                content.append(Image(parcel_map, width=display_w, height=display_h))
+                print(f"✅ CARTE PARCELLAIRE — insérée dans le PDF ({display_w/cm:.2f} cm × {display_h/cm:.2f} cm)")
 
                 if parcel_info:
-
-                    content.append(
-                        Paragraph(
-                            "<font size='7' color='#888888'>"
-                            "Sentinel-2 B4/B3/B2 "
-                            "(10 m native) — "
-                            f"{html.escape(parcel_info)}"
-                            "</font>",
-                            styles["TDMLegal"],
-                        )
-                    )
-
-                content.append(
-                    Paragraph(
-                        "Total Area: "
-                        f"{area_str} | Boundary points: "
-                        f"{display_point_count if display_point_count is not None else 'Point mode'}",
-                        styles["TDMValue"],
-                    )
-                )
-
+                    content.append(Paragraph(f"<font size='7' color='#888888'>Sentinel-2 B4/B3/B2 (10 m native) — {html.escape(parcel_info)}</font>", styles["TDMLegal"]))
+                
+                content.append(Paragraph(f"Total Area: {area_str} | Boundary points: {display_point_count if display_point_count is not None else 'Point mode'}", styles["TDMValue"]))
                 parcel_inserted = True
-
             except Exception as e:
-
-                print(
-                    "⚠️ Erreur insertion carte parcellaire : "
-                    f"{type(e).__name__}: {e}"
-                )
+                print(f"⚠️ Erreur insertion carte parcellaire : {type(e).__name__}: {e}")
 
         if not parcel_inserted:
-
-            reason = html.escape(
-                parcel_err or "unavailable"
-            )
-
-            print(
-                f"❌ CARTE PARCELLAIRE — non insérée. "
-                f"Raison : {parcel_err}"
-            )
-
-            map_box = Table(
-                [[
-                    Paragraph(
-                        f"Total Area: {area_str}<br/>"
-                        "Boundary points: "
-                        f"{display_point_count if display_point_count is not None else 'Point mode'}"
-                        "<br/>"
-                        f"<i>Satellite parcel map unavailable ({reason})</i>",
-                        styles["TDMValue"],
-                    )
-                ]],
-                colWidths=[17 * cm],
-                rowHeights=[3 * cm],
-            )
-
-            map_box.setStyle(
-                TableStyle([
-                    (
-                        "BACKGROUND",
-                        (0, 0),
-                        (-1, -1),
-                        TDM_LIGHT_GREEN,
-                    ),
-                    (
-                        "ALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "CENTER",
-                    ),
-                    (
-                        "VALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "MIDDLE",
-                    ),
-                    (
-                        "BOX",
-                        (0, 0),
-                        (-1, -1),
-                        1,
-                        TDM_GREEN,
-                    ),
-                ])
-            )
-
+            reason = html.escape(parcel_err or "unavailable")
+            print(f"❌ CARTE PARCELLAIRE — non insérée. Raison : {parcel_err}")
+            map_box = Table([[Paragraph(f"Total Area: {area_str}<br/>Boundary points: {display_point_count if display_point_count is not None else 'Point mode'}<br/><i>Satellite parcel map unavailable ({reason})</i>", styles["TDMValue"])]], colWidths=[17*cm], rowHeights=[3*cm])
+            map_box.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), TDM_LIGHT_GREEN), ("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("BOX", (0,0), (-1,-1), 1, TDM_GREEN)]))
             content.append(map_box)
 
-        content.append(
-            Spacer(1, 0.5 * cm)
-        )
-
-        # ======================================
-        # COULEUR DU STATUT
-        # ======================================
+        content.append(Spacer(1, 0.5 * cm))
 
         if "NO POST-2020" in safe_status:
-
             status_color = "#1E3A32"
-
         elif "POTENTIAL" in safe_status:
-
             status_color = "#CC0000"
-
         elif "INSUFFICIENT DATA" in safe_status:
-
             status_color = "#D97706"
-
         else:
-
             status_color = "#F59E0B"
 
-        # ======================================
-        # INDICATEURS PRINCIPAUX
-        # ======================================
-
-        tc_display = format_val(
-            tree_cover,
-            "%",
-            0,
-            100
-        )
-
-        score_display = format_val(
-            risk_score,
-            "",
-            0,
-            100
-        )
-
-        loss_display = get_loss_display(
-            safe_status,
-            loss_year
-        )
+        tc_display = format_val(tree_cover, "%", 0, 100)
+        score_display = format_val(risk_score, "", 0, 100)
+        loss_display = get_loss_display(safe_status, loss_year)
 
         findings_data = [
-
-            [
-                Paragraph(
-                    "Tree Cover",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Last Loss",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Risk Score",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Screening Status",
-                    styles["TDMLabel"]
-                ),
-            ],
-
-            [
-                Paragraph(
-                    f"<b>{tc_display}</b>",
-                    styles["TDMValue"]
-                ),
-
-                Paragraph(
-                    f"<b>{loss_display}</b>",
-                    styles["TDMValue"]
-                ),
-
-                Paragraph(
-                    f"<b>{score_display}</b>",
-                    styles["TDMValue"]
-                ),
-
-                Paragraph(
-                    f"<font color='{status_color}'>"
-                    f"<b>{safe_status}</b>"
-                    "</font>",
-                    styles["TDMValue"]
-                ),
-            ],
+            [Paragraph("Tree Cover", styles["TDMLabel"]), Paragraph("Last Loss", styles["TDMLabel"]), Paragraph("Risk Score", styles["TDMLabel"]), Paragraph("Screening Status", styles["TDMLabel"])],
+            [Paragraph(f"<b>{tc_display}</b>", styles["TDMValue"]), Paragraph(f"<b>{loss_display}</b>", styles["TDMValue"]), Paragraph(f"<b>{score_display}</b>", styles["TDMValue"]), Paragraph(f"<font color='{status_color}'><b>{safe_status}</b></font>", styles["TDMValue"])],
         ]
-
-        findings_table = Table(
-            findings_data,
-            colWidths=[4.25 * cm] * 4
-        )
-
-        findings_table.setStyle(
-            TableStyle([
-                (
-                    "BACKGROUND",
-                    (0, 0),
-                    (-1, -1),
-                    TDM_GRAY,
-                ),
-                (
-                    "ALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "CENTER",
-                ),
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "MIDDLE",
-                ),
-                (
-                    "TOPPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    8,
-                ),
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    8,
-                ),
-                (
-                    "LINEBEFORE",
-                    (1, 0),
-                    (-1, -1),
-                    0.5,
-                    colors.lightgrey,
-                ),
-            ])
-        )
-
+        findings_table = Table(findings_data, colWidths=[4.25*cm]*4)
+        findings_table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), TDM_GRAY), ("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("TOPPADDING", (0,0), (-1,-1), 8), ("BOTTOMPADDING", (0,0), (-1,-1), 8), ("LINEBEFORE", (1,0), (-1,-1), 0.5, colors.lightgrey)]))
         content.append(findings_table)
+        content.append(Spacer(1, 0.5 * cm))
 
-        content.append(
-            Spacer(1, 0.5 * cm)
-        )
-
-        # ======================================
-        # DISCLAIMER EUDR
-        # ======================================
-
-        disclaimer_text = (
-            "<b>THIS REPORT IS A TERRITORIAL SCREENING, "
-            "NOT A CERTIFICATE</b><br/>"
-            "This document provides a technical traceability "
-            "and documentation support report. "
-            "It is not a certificate of compliance with "
-            "the EU Deforestation Regulation (EUDR) "
-            "and does not replace the legal Due Diligence "
-            "required by the operator or the relevant authorities."
-        )
-
-        disclaimer = Table(
-            [[
-                Paragraph(
-                    disclaimer_text,
-                    styles["TDMDisclaimer"]
-                )
-            ]],
-            colWidths=[17 * cm]
-        )
-
-        disclaimer.setStyle(
-            TableStyle([
-                (
-                    "BACKGROUND",
-                    (0, 0),
-                    (-1, -1),
-                    TDM_LIGHT_GREEN,
-                ),
-                (
-                    "BOX",
-                    (0, 0),
-                    (-1, -1),
-                    1,
-                    TDM_GREEN,
-                ),
-                (
-                    "TOPPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    10,
-                ),
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    10,
-                ),
-            ])
-        )
-
+        disclaimer_text = "<b>THIS REPORT IS A TERRITORIAL SCREENING, NOT A CERTIFICATE</b><br/>This document provides a technical traceability and documentation support report. It is not a certificate of compliance with the EU Deforestation Regulation (EUDR) and does not replace the legal Due Diligence required by the operator or the relevant authorities."
+        disclaimer = Table([[Paragraph(disclaimer_text, styles["TDMDisclaimer"])]], colWidths=[17*cm])
+        disclaimer.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), TDM_LIGHT_GREEN), ("BOX", (0,0), (-1,-1), 1, TDM_GREEN), ("TOPPADDING", (0,0), (-1,-1), 10), ("BOTTOMPADDING", (0,0), (-1,-1), 10)]))
         content.append(disclaimer)
 
         # ======================================
         # ANNEXE TECHNIQUE — PAGE 2
         # ======================================
-
         content.append(PageBreak())
+        content.append(Paragraph("TECHNICAL ASSESSMENT ANNEX", styles["TDMSection"]))
+        content.append(Spacer(1, 0.3 * cm))
 
-        content.append(
-            Paragraph(
-                "TECHNICAL ASSESSMENT ANNEX",
-                styles["TDMSection"]
-            )
-        )
+        source_desc = "Google Earth Engine (Hansen)" if source == "ee" else ("Global Forest Watch" if source == "gfw" else "Analysis Unavailable")
+        period_text = "• Dataset Coverage: 2001–2023<br/>" if (source == "ee" and dataset_version == EXPECTED_DATASET) else ""
+        hansen_line = "• Hansen Global Forest Change: 30 m resolution<br/>" if (source == "ee" and dataset_version == EXPECTED_DATASET) else ""
 
-        content.append(
-            Spacer(1, 0.3 * cm)
-        )
+        method_text = f"<b>Data &amp; Methodology</b><br/>• Data Source: {html.escape(source_desc)}<br/>• Dataset Version: {html.escape(str(dataset_version))}<br/>{period_text}• EUDR Reference Date: 31 Dec 2020<br/>{hansen_line}• Sentinel-2 RGB (B4/B3/B2): 10 m native resolution<br/><i>Note: cloud percentage shown on satellite maps is the global scene metric, not a cloud-cover measurement over the parcel.</i><br/><br/><i>Note: This report is a general agricultural territorial screening. It does not certify compliance with EUDR, which only applies to specific commodities and operators.</i>"
+        content.append(Paragraph(method_text, styles["TDMValue"]))
+        content.append(Spacer(1, 0.5 * cm))
 
-        source_desc = (
-            "Google Earth Engine (Hansen)"
-            if source == "ee"
-            else (
-                "Global Forest Watch"
-                if source == "gfw"
-                else "Analysis Unavailable"
-            )
-        )
-
-        period_text = ""
-
-        if (
-            source == "ee"
-            and dataset_version == EXPECTED_DATASET
-        ):
-
-            period_text = (
-                "• Dataset Coverage: 2001–2023<br/>"
-            )
-
-        hansen_line = (
-            "• Hansen Global Forest Change: "
-            "30 m resolution<br/>"
-            if (
-                source == "ee"
-                and dataset_version == EXPECTED_DATASET
-            )
-            else ""
-        )
-
-        method_text = (
-            "<b>Data &amp; Methodology</b><br/>"
-
-            f"• Data Source: "
-            f"{html.escape(source_desc)}<br/>"
-
-            f"• Dataset Version: "
-            f"{html.escape(str(dataset_version))}<br/>"
-
-            f"{period_text}"
-
-            "• EUDR Reference Date: 31 Dec 2020<br/>"
-
-            f"{hansen_line}"
-
-            "• Sentinel-2 RGB (B4/B3/B2): "
-            "10 m native resolution<br/>"
-
-            "<i>Note: cloud percentage shown on satellite maps "
-            "is the global scene metric, not a cloud-cover "
-            "measurement over the parcel.</i><br/><br/>"
-
-            "<i>Note: This report is a general agricultural "
-            "territorial screening. It does not certify "
-            "compliance with EUDR, which only applies to "
-            "specific commodities and operators.</i>"
-        )
-
-        content.append(
-            Paragraph(
-                method_text,
-                styles["TDMValue"]
-            )
-        )
-
-        content.append(
-            Spacer(1, 0.5 * cm)
-        )
-
-        # ======================================
-        # QUALITÉ ET COUVERTURE DES DONNÉES
-        # ======================================
-
-        if (
-            coverage_pct is not None
-            or valid_pixels is not None
-            or insufficient_reason
-            or treecover_reason
-        ):
-
-            content.append(
-                Paragraph(
-                    "Screening Quality & Coverage Metrics",
-                    styles["TDMSection"]
-                )
-            )
-
-            if (
-                isinstance(coverage_pct, (int, float))
-                and not isinstance(coverage_pct, bool)
-                and math.isfinite(coverage_pct)
-                and coverage_pct >= 0
-            ):
-
-                cov_display = (
-                    f"<b>{coverage_pct:.2f}%</b>"
-                )
-
-                if coverage_pct > 100:
-
-                    cov_display += (
-                        "<br/>"
-                        "<font color='#D97706'>"
-                        "Above nominal estimate"
-                        "</font>"
-                    )
-
-            else:
-
-                cov_display = "N/A"
+        if (coverage_pct is not None or valid_pixels is not None or insufficient_reason or treecover_reason):
+            content.append(Paragraph("Screening Quality & Coverage Metrics", styles["TDMSection"]))
+            cov_display = f"<b>{coverage_pct:.2f}%</b>" if (isinstance(coverage_pct, (int, float)) and not isinstance(coverage_pct, bool) and math.isfinite(coverage_pct) and coverage_pct >= 0) else "N/A"
+            
+            if isinstance(cov_display, str) and coverage_pct is not None and coverage_pct > 100:
+                cov_display += "<br/><font color='#D97706'>Above nominal estimate</font>"
 
             metrics_data = [
-
-                [
-                    Paragraph(
-                        "Estimated Coverage",
-                        styles["TDMLabel"]
-                    ),
-
-                    Paragraph(
-                        "Valid Pixels",
-                        styles["TDMLabel"]
-                    ),
-
-                    Paragraph(
-                        "Nominal Pixels (Estimate)",
-                        styles["TDMLabel"]
-                    ),
-                ],
-
-                [
-                    Paragraph(
-                        cov_display,
-                        styles["TDMValue"]
-                    ),
-
-                    Paragraph(
-                        (
-                            f"{valid_pixels}"
-                            if valid_pixels is not None
-                            else "N/A"
-                        ),
-                        styles["TDMValue"]
-                    ),
-
-                    Paragraph(
-                        (
-                            f"{nominal_pixels}"
-                            if nominal_pixels is not None
-                            else "N/A"
-                        ),
-                        styles["TDMValue"]
-                    ),
-                ],
+                [Paragraph("Estimated Coverage", styles["TDMLabel"]), Paragraph("Valid Pixels", styles["TDMLabel"]), Paragraph("Nominal Pixels (Estimate)", styles["TDMLabel"])],
+                [Paragraph(cov_display, styles["TDMValue"]), Paragraph(f"{valid_pixels}" if valid_pixels is not None else "N/A", styles["TDMValue"]), Paragraph(f"{nominal_pixels}" if nominal_pixels is not None else "N/A", styles["TDMValue"])],
             ]
-
-            metrics_table = Table(
-                metrics_data,
-                colWidths=[5.66 * cm] * 3
-            )
-
-            metrics_table.setStyle(
-                TableStyle([
-                    (
-                        "BACKGROUND",
-                        (0, 0),
-                        (-1, -1),
-                        TDM_GRAY,
-                    ),
-                    (
-                        "ALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "CENTER",
-                    ),
-                    (
-                        "VALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "MIDDLE",
-                    ),
-                    (
-                        "GRID",
-                        (0, 0),
-                        (-1, -1),
-                        0.5,
-                        colors.lightgrey,
-                    ),
-                ])
-            )
-
+            metrics_table = Table(metrics_data, colWidths=[5.66*cm]*3)
+            metrics_table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), TDM_GRAY), ("ALIGN", (0,0), (-1,-1), "CENTER"), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("GRID", (0,0), (-1,-1), 0.5, colors.lightgrey)]))
             content.append(metrics_table)
-
-            content.append(
-                Spacer(1, 0.3 * cm)
-            )
+            content.append(Spacer(1, 0.3 * cm))
 
             if insufficient_reason:
-
-                content.append(
-                    Paragraph(
-                        "<b>Insufficiency Reason:</b> "
-                        f"{html.escape(str(insufficient_reason))}",
-                        styles["TDMValue"]
-                    )
-                )
-
+                content.append(Paragraph(f"<b>Insufficiency Reason:</b> {html.escape(str(insufficient_reason))}", styles["TDMValue"]))
             if treecover_reason:
-
-                content.append(
-                    Paragraph(
-                        "<b>Treecover Availability:</b> "
-                        f"{html.escape(str(treecover_reason))}",
-                        styles["TDMValue"]
-                    )
-                )
-
-            content.append(
-                Spacer(1, 0.5 * cm)
-            )
-
-        # ======================================
-        # DONNÉES GÉOSPATIALES
-        # ======================================
+                content.append(Paragraph(f"<b>Treecover Availability:</b> {html.escape(str(treecover_reason))}", styles["TDMValue"]))
+            content.append(Spacer(1, 0.5 * cm))
 
         if polygon_points and len(polygon_points) >= 3:
+            content.append(Paragraph("Geospatial Data (Polygon)", styles["TDMSection"]))
+            content.append(Paragraph(f"Centroid: {centroid_str} | Area: {area_str}", styles["TDMValue"]))
+            content.append(Spacer(1, 0.2 * cm))
 
-            content.append(
-                Paragraph(
-                    "Geospatial Data (Polygon)",
-                    styles["TDMSection"]
-                )
-            )
+            poly_data = [[Paragraph("Point", styles["TDMLabel"]), Paragraph("Latitude", styles["TDMLabel"]), Paragraph("Longitude", styles["TDMLabel"])]]
+            display_points = polygon_points[:-1] if polygon_points[0] == polygon_points[-1] else polygon_points
+            
+            for i, (p_lon, p_lat) in enumerate(display_points, start=1):
+                poly_data.append([Paragraph(str(i), styles["TDMValue"]), Paragraph(f"{p_lat:.6f}", styles["TDMValue"]), Paragraph(f"{p_lon:.6f}", styles["TDMValue"])])
 
-            content.append(
-                Paragraph(
-                    f"Centroid: {centroid_str} "
-                    f"| Area: {area_str}",
-                    styles["TDMValue"]
-                )
-            )
-
-            content.append(
-                Spacer(1, 0.2 * cm)
-            )
-
-            poly_data = [[
-
-                Paragraph(
-                    "Point",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Latitude",
-                    styles["TDMLabel"]
-                ),
-
-                Paragraph(
-                    "Longitude",
-                    styles["TDMLabel"]
-                ),
-
-            ]]
-
-            display_points = (
-                polygon_points[:-1]
-                if polygon_points[0] == polygon_points[-1]
-                else polygon_points
-            )
-
-            for i, (p_lon, p_lat) in enumerate(
-                display_points,
-                start=1
-            ):
-
-                poly_data.append([
-
-                    Paragraph(
-                        str(i),
-                        styles["TDMValue"]
-                    ),
-
-                    Paragraph(
-                        f"{p_lat:.6f}",
-                        styles["TDMValue"]
-                    ),
-
-                    Paragraph(
-                        f"{p_lon:.6f}",
-                        styles["TDMValue"]
-                    ),
-
-                ])
-
-            poly_table = Table(
-                poly_data,
-                colWidths=[
-                    2 * cm,
-                    5 * cm,
-                    5 * cm,
-                ],
-                repeatRows=1,
-                splitByRow=1,
-            )
-
-            poly_table.setStyle(
-                TableStyle([
-                    (
-                        "GRID",
-                        (0, 0),
-                        (-1, -1),
-                        0.5,
-                        colors.lightgrey,
-                    ),
-                    (
-                        "BACKGROUND",
-                        (0, 0),
-                        (-1, 0),
-                        TDM_GRAY,
-                    ),
-                ])
-            )
-
+            poly_table = Table(poly_data, colWidths=[2*cm, 5*cm, 5*cm], repeatRows=1, splitByRow=1)
+            poly_table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.lightgrey), ("BACKGROUND", (0,0), (-1,0), TDM_GRAY)]))
             content.append(poly_table)
 
         # ======================================
         # CONTEXTE TERRITORIAL — PAGE 3
         # ======================================
-
         content.append(PageBreak())
+        content.append(Paragraph("TERRITORIAL CONTEXT &amp; AUDIT", styles["TDMSection"]))
+        content.append(Spacer(1, 0.3 * cm))
 
-        content.append(
-            Paragraph(
-                "TERRITORIAL CONTEXT &amp; AUDIT",
-                styles["TDMSection"]
-            )
-        )
-
-        content.append(
-            Spacer(1, 0.3 * cm)
-        )
-
-        if (
-            polygon_points
-            and len(polygon_points) >= 3
-            and lat is not None
-            and lon is not None
-        ):
-
-            (
-                context_map,
-                context_info,
-                context_err,
-            ) = generate_context_map(
+        if (polygon_points and len(polygon_points) >= 3 and lat is not None and lon is not None):
+            context_map, context_info, context_err = generate_context_map(
                 polygon_points,
                 lat,
                 lon,
                 context_path,
+                buffer_m=preset["context_buffer_m"],
+                image_size=preset["context_size"]
             )
-
         else:
+            context_map, context_info, context_err = None, None, "No polygon or coordinates"
 
-            context_map = None
-            context_info = None
-            context_err = "No polygon or coordinates"
-
-        # ======================================
-        # INSERTION DE LA CARTE TERRITORIALE
-        # ======================================
-
-        if (
-            context_map
-            and os.path.exists(context_map)
-        ):
-
+        if (context_map and os.path.exists(context_map)):
             try:
-
                 with PILImage.open(context_map) as src:
                     w, h = src.size
-
-                # Format paysage : largeur fixe 17 cm,
-                # hauteur déduite du ratio réel de l'image.
+                
                 display_w = 17 * cm
                 display_h = display_w * h / w
-
-                # Garde-fou : ne pas dépasser 12 cm de haut
                 if display_h > 12 * cm:
                     display_h = 12 * cm
                     display_w = display_h * w / h
 
-                content.append(
-                    Image(
-                        context_map,
-                        width=display_w,
-                        height=display_h,
-                    )
-                )
-
-                print(
-                    f"✅ CARTE CONTEXTE — insérée dans le PDF "
-                    f"({display_w/cm:.2f} cm × {display_h/cm:.2f} cm)"
-                )
+                content.append(Image(context_map, width=display_w, height=display_h))
+                print(f"✅ CARTE CONTEXTE — insérée dans le PDF ({display_w/cm:.2f} cm × {display_h/cm:.2f} cm)")
 
                 if context_info:
-
-                    content.append(
-                        Paragraph(
-                            "<font size='7' color='#888888'>"
-                            "Sentinel-2 B4/B3/B2 "
-                            "(10 m native) — "
-                            f"{html.escape(context_info)}"
-                            "</font>",
-                            styles["TDMLegal"],
-                        )
-                    )
-
+                    content.append(Paragraph(f"<font size='7' color='#888888'>Sentinel-2 B4/B3/B2 (10 m native) — {html.escape(context_info)}</font>", styles["TDMLegal"]))
             except Exception as e:
-
-                print(
-                    "⚠️ Erreur insertion carte contexte : "
-                    f"{type(e).__name__}: {e}"
-                )
-
-                content.append(
-                    Paragraph(
-                        "<i>Territorial context map "
-                        "unavailable (rendering error).</i>",
-                        styles["TDMValue"],
-                    )
-                )
-
+                print(f"⚠️ Erreur insertion carte contexte : {type(e).__name__}: {e}")
+                content.append(Paragraph("<i>Territorial context map unavailable (rendering error).</i>", styles["TDMValue"]))
         else:
+            reason = html.escape(context_err or "unavailable")
+            print(f"❌ CARTE CONTEXTE — non insérée. Raison : {context_err}")
+            content.append(Paragraph(f"<i>Territorial context map unavailable ({reason}).</i>", styles["TDMValue"]))
 
-            reason = html.escape(
-                context_err or "unavailable"
-            )
-
-            print(
-                f"❌ CARTE CONTEXTE — non insérée. "
-                f"Raison : {context_err}"
-            )
-
-            content.append(
-                Paragraph(
-                    "<i>Territorial context map unavailable "
-                    f"({reason}).</i>",
-                    styles["TDMValue"],
-                )
-            )
-
-        # ======================================
-        # CONTEXTE ADMINISTRATIF — NOMINATIM
-        # ======================================
-
-        terr_context = (
-            get_territorial_context(lat, lon)
-            if (
-                lat is not None
-                and lon is not None
-            )
-            else None
-        )
-
+        terr_context = get_territorial_context(lat, lon) if (lat is not None and lon is not None) else None
         if terr_context:
-
             parts = []
-
-            if terr_context.get("place_name"):
-
-                parts.append(
-                    "OSM Place: "
-                    + html.escape(
-                        terr_context["place_name"]
-                    )
-                )
-
-            if terr_context.get("town_name"):
-
-                parts.append(
-                    "OSM Town: "
-                    + html.escape(
-                        terr_context["town_name"]
-                    )
-                )
-
-            if terr_context.get("city_name"):
-
-                parts.append(
-                    "OSM City: "
-                    + html.escape(
-                        terr_context["city_name"]
-                    )
-                )
-
-            if terr_context.get("municipality_name"):
-
-                parts.append(
-                    "Municipality: "
-                    + html.escape(
-                        terr_context["municipality_name"]
-                    )
-                )
-
-            if terr_context.get("region"):
-
-                parts.append(
-                    "Region: "
-                    + html.escape(
-                        terr_context["region"]
-                    )
-                )
-
-            if terr_context.get("country"):
-
-                parts.append(
-                    "Country: "
-                    + html.escape(
-                        terr_context["country"]
-                    )
-                )
+            if terr_context.get("place_name"): parts.append("OSM Place: " + html.escape(terr_context["place_name"]))
+            if terr_context.get("town_name"): parts.append("OSM Town: " + html.escape(terr_context["town_name"]))
+            if terr_context.get("city_name"): parts.append("OSM City: " + html.escape(terr_context["city_name"]))
+            if terr_context.get("municipality_name"): parts.append("Municipality: " + html.escape(terr_context["municipality_name"]))
+            if terr_context.get("region"): parts.append("Region: " + html.escape(terr_context["region"]))
+            if terr_context.get("country"): parts.append("Country: " + html.escape(terr_context["country"]))
 
             if parts:
+                content.append(Spacer(1, 0.4 * cm))
+                content.append(Paragraph("<br/>".join(parts), styles["TDMValue"]))
+                content.append(Paragraph("<font size='7' color='#888888'>Source: Nominatim, OpenStreetMap</font>", styles["TDMLegal"]))
 
-                content.append(
-                    Spacer(1, 0.4 * cm)
-                )
-
-                content.append(
-                    Paragraph(
-                        "<br/>".join(parts),
-                        styles["TDMValue"]
-                    )
-                )
-
-                content.append(
-                    Paragraph(
-                        "<font size='7' color='#888888'>"
-                        "Source: Nominatim, OpenStreetMap"
-                        "</font>",
-                        styles["TDMLegal"],
-                    )
-                )
-
-        # ======================================
-        # VÉRIFICATION FINALE
-        # ======================================
-
-        content.append(
-            Spacer(1, 1 * cm)
-        )
-
-        content.append(
-            Paragraph(
-                f"Verify at: {html.escape(verify_url)}",
-                styles["TDMLegal"]
-            )
-        )
-
-        # Marqueur de diagnostic : garantit du texte
-        # extractible même si la carte a échoué.
-        content.append(
-            Paragraph(
-                "<font size='6' color='#AAAAAA'>"
-                "END OF REPORT — context page rendered"
-                "</font>",
-                styles["TDMLegal"],
-            )
-        )
-
-        # ======================================
-        # CONSTRUCTION DU PDF
-        # ======================================
+        content.append(Spacer(1, 1 * cm))
+        content.append(Paragraph(f"Verify at: {html.escape(verify_url)}", styles["TDMLegal"]))
+        content.append(Paragraph("<font size='6' color='#AAAAAA'>END OF REPORT — context page rendered</font>", styles["TDMLegal"]))
 
         doc.build(content)
-
         success = True
-
         return file_path
 
     finally:
-
-        # ======================================
-        # NETTOYAGE DES FICHIERS TEMPORAIRES
-        # ======================================
-
-        for path in (
-            qr_path,
-            parcel_path,
-            context_path,
-        ):
-
+        for path in (qr_path, parcel_path, context_path):
             try:
                 os.remove(path)
-
             except OSError:
                 pass
-
         if not success:
-
             try:
                 os.remove(file_path)
-
             except OSError:
                 pass
