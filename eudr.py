@@ -1,6 +1,7 @@
 # v2.7 - Déplacement du diagnostic brut avant le traitement des clés
 # + Livrable 0.1 - Marqueur de build
 # + Étape 1a - Métriques de couverture, raisons d'insuffisance séparées, persistance et propagation
+# + Étape 1b - Activation du seuil de couverture QC TDM (10%)
 import uuid
 import sqlite3
 import os
@@ -61,7 +62,6 @@ def get_polygon_area_ha(polygon_coords):
         return None
     try:
         poly = Polygon(polygon_coords)
-        # Shapely gère la fermeture implicite. On vérifie juste la validité et l'aire.
         if not poly.is_valid or poly.area == 0:
             return None
             
@@ -102,7 +102,6 @@ def init_db():
     )
     """)
     
-    # MIGRATIONS : Ajout des nouvelles colonnes
     c.execute("PRAGMA table_info(audits)")
     columns = [row[1] for row in c.fetchall()]
     
@@ -159,7 +158,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
-        # 1. Évaluation INDÉPENDANTE de treecover2000
         treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(), geometry=geometry, scale=30, maxPixels=1e9
         ).get('treecover2000').getInfo()
@@ -173,17 +171,14 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             tc_insufficient = False
             treecover_reason = None
 
-        # 2. Évaluation INDÉPENDANTE de lossyear
         valid_pixels_raw = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
         ).get('lossyear').getInfo()
 
-        # Vérification stricte : entier, fini et strictement positif
         if not isinstance(valid_pixels_raw, (int, float)) or not math.isfinite(valid_pixels_raw) or valid_pixels_raw <= 0:
             loss_insufficient = True
             valid_pixels = None
         else:
-            # On vérifie que la valeur est suffisamment proche d'un entier (tolérance flottante)
             if abs(valid_pixels_raw - round(valid_pixels_raw)) > 1e-6:
                 print(f"⚠️ EE: valid_pixels non entier reçu : {valid_pixels_raw}")
                 loss_insufficient = True
@@ -192,8 +187,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 valid_pixels = int(round(valid_pixels_raw))
                 loss_insufficient = False
 
-        # 3. Calcul de la couverture (indépendant des erreurs de bande)
-        # Note: On ne plafonne pas à 100%, car le dénominateur est une estimation.
         area_ha = get_polygon_area_ha(polygon) if polygon else None
         nominal_pixels_estimate = None
         estimated_coverage_pct = None
@@ -203,7 +196,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             if nominal_pixels_estimate > 0 and not loss_insufficient:
                 estimated_coverage_pct = round((valid_pixels / nominal_pixels_estimate) * 100, 2)
 
-        # 4. Histogramme (seulement si valid_pixels est ok)
         hist_insufficient = False
         hist_reason = None
         loss_percentage = -1
@@ -261,10 +253,8 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                     hist_reason = str(e) if str(e) in ["NULL_BUCKET", "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE", "INVALID_YEAR", "INVALID_COUNT"] else "INVALID_DATA"
                     print(f"⚠️ EE: Erreur histogramme : {hist_reason}")
 
-        # 5. Conséquence sur le statut global de l'analyse
         is_loss_insufficient = loss_insufficient or hist_insufficient
         
-        # La raison d'insuffisance est STRICTEMENT réservée à lossyear/histogramme.
         if is_loss_insufficient:
             insufficient_reason = hist_reason if hist_reason else "NO_VALID_LOSS_PIXELS"
         else:
@@ -290,6 +280,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
 def compute_risk(lat: float, lon: float, polygon=None):
     result = compute_risk_ee(lat, lon, polygon)
     if result:
+        # 1. D'abord, on vérifie si l'analyse des pertes a échoué techniquement
         if result.get("insufficient_data"):
             return {
                 "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", 
@@ -301,9 +292,22 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "insufficient_reason": result["insufficient_reason"], "treecover_reason": result["treecover_reason"]
             }
 
+        # 2. Ensuite, on applique le seuil de couverture (Étape 1b)
+        coverage = result.get("estimated_coverage_pct")
+        if coverage is None or coverage < TDM_SCREENING_THRESHOLD_PCT:
+            return {
+                "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", 
+                "tree_cover": result["tree_cover_mean_ee"], "loss_year": -1, "source": result["source"], 
+                "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION,
+                "tree_cover_mean_ee": result["tree_cover_mean_ee"], "tree_cover_gfw_2000": None,
+                "valid_pixels": result["valid_pixels"], "nominal_pixels_estimate": result["nominal_pixels_estimate"], 
+                "estimated_coverage_pct": coverage, 
+                "insufficient_reason": "COVERAGE_BELOW_10_PCT", 
+                "treecover_reason": result["treecover_reason"]
+            }
+
+        # 3. Si tout est bon, on applique les seuils métiers
         loss_pct = result["loss_percentage"]
-        
-        # Décision métier INCHANGÉE (seuils 1% et 5%)
         if loss_pct > 5.0:
             risk_score, risk_level, status = 100, "HIGH", "POTENTIAL LOSS SIGNAL"
         elif loss_pct > 1.0:
@@ -347,7 +351,6 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
     result = compute_risk(lat, lon, polygon)
     signature = sign_audit(audit_id)
     
-    # PROPAGATION : Ajout explicite des nouvelles métriques
     audit = {
         "audit_id": audit_id, "farm_name": name, "latitude": lat, "longitude": lon,
         "risk_score": result["risk_score"], "risk_level": result["risk_level"],
@@ -383,7 +386,6 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
 def get_audit(audit_id: str):
     conn = get_conn()
     c = conn.cursor()
-    # Sélection explicite des colonnes
     c.execute("""
         SELECT 
             audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
