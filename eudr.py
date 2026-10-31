@@ -132,7 +132,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             maxPixels=1e9
         ).get('lossyear').getInfo()
 
-                if valid_pixels is None or valid_pixels == 0 or tree_cover == -1:
+        if valid_pixels is None or valid_pixels == 0 or tree_cover == -1:
             print("=== TDM EARTH ENGINE EARLY EXIT ===")
             print(f"Tree cover: {treecover_val}")
             print(f"Converted tree cover: {tree_cover}")
