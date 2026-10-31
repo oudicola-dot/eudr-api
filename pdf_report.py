@@ -499,14 +499,17 @@ def fetch_osm_places(lat, lon, radius_m=3000):
             f"{type(e).__name__}: {e}"
         )
 
-        return []# ==========================================
+        return []
+
+
+# ==========================================
 # RÉCUPÉRATION SENTINEL-2
 # ==========================================
 
 def _fetch_satellite_image(
     polygon_points,
     buffer_m,
-    image_size=1800
+    image_size=(1800, 1100)
 ):
     """
     Sentinel-2 via Earth Engine.
@@ -572,15 +575,70 @@ def _fetch_satellite_image(
             ring.append(ring[0])
 
         # Construction du polygone avec un anneau explicite.
-        roi = ee.Geometry.Polygon([ring]).buffer(buffer_m)
+        buffered = ee.Geometry.Polygon([ring]).buffer(buffer_m)
+
+        # ======================================
+        # ÉLARGISSEMENT DU CADRAGE (PAYSAGE)
+        # ======================================
+        # EE fitte le ROI dans les dimensions demandées.
+        # Pour éviter toute déformation, on étend le ROI
+        # au ratio cible (ex. 1800×1100 = 1.636).
+        # Calcul en mètres (projection locale) pour un
+        # ratio correct à toutes les latitudes.
+
+        target_aspect = (
+            image_size[0] / image_size[1]
+            if image_size[1] > 0
+            else 1.0
+        )
+
+        buffered_bounds = buffered.bounds().getInfo()
+        bounds_ring = buffered_bounds["coordinates"][0]
+
+        min_lon = min(p[0] for p in bounds_ring)
+        max_lon = max(p[0] for p in bounds_ring)
+        min_lat = min(p[1] for p in bounds_ring)
+        max_lat = max(p[1] for p in bounds_ring)
+
+        center_lon = (min_lon + max_lon) / 2.0
+        center_lat = (min_lat + max_lat) / 2.0
+
+        # Approximation métrique locale
+        lat_rad = math.radians(center_lat)
+        m_per_deg_lon = 111320.0 * math.cos(lat_rad)
+        m_per_deg_lat = 110540.0
+
+        width_m = max((max_lon - min_lon) * m_per_deg_lon, 1.0)
+        height_m = max((max_lat - min_lat) * m_per_deg_lat, 1.0)
+        current_aspect = width_m / height_m
+
+        if current_aspect < target_aspect:
+            # Trop étroit : on élargit horizontalement
+            new_width_m = height_m * target_aspect
+            new_width_deg = new_width_m / m_per_deg_lon
+            min_lon = center_lon - new_width_deg / 2.0
+            max_lon = center_lon + new_width_deg / 2.0
+        else:
+            # Trop large : on élargit verticalement
+            new_height_m = width_m / target_aspect
+            new_height_deg = new_height_m / m_per_deg_lat
+            min_lat = center_lat - new_height_deg / 2.0
+            max_lat = center_lat + new_height_deg / 2.0
+
+        roi = ee.Geometry.Rectangle(
+            [min_lon, min_lat, max_lon, max_lat]
+        )
 
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=365)
 
         print(
-            f"🔎 Étape A2 — ROI construite : "
+            f"🔎 Étape A2 — ROI paysage {target_aspect:.3f} : "
             f"{len(ring)} points (fermeture incluse), "
-            f"buffer={buffer_m} m."
+            f"buffer={buffer_m} m, "
+            f"bounds étendus "
+            f"[{min_lon:.4f},{min_lat:.4f} → "
+            f"{max_lon:.4f},{max_lat:.4f}]"
         )
 
         print(
@@ -737,7 +795,7 @@ def _fetch_satellite_image(
             )
             .getThumbURL({
                 "region": roi,
-                "dimensions": image_size,
+                'dimensions': f'{image_size[0]}x{image_size[1]}',
                 "format": "png",
             })
         )
@@ -1391,7 +1449,10 @@ def generate_context_map(
             f"Save failed ({type(e).__name__})",
         )
 
-    return path, info, None# ==========================================
+    return path, info, None
+
+
+# ==========================================
 # GÉNÉRATION DU PDF
 # ==========================================
 
@@ -1718,16 +1779,21 @@ def generate_eudr_pdf(
                 with PILImage.open(parcel_map) as src:
                     w, h = src.size
 
-                scale = min(
-                    (17 * cm) / w,
-                    (9 * cm) / h
-                )
+                # Format paysage : largeur fixe 17 cm,
+                # hauteur déduite du ratio réel de l'image.
+                display_w = 17 * cm
+                display_h = display_w * h / w
+
+                # Garde-fou : ne pas dépasser 12 cm de haut
+                if display_h > 12 * cm:
+                    display_h = 12 * cm
+                    display_w = display_h * w / h
 
                 content.append(
                     Image(
                         parcel_map,
-                        width=w * scale,
-                        height=h * scale,
+                        width=display_w,
+                        height=display_h,
                     )
                 )
 
@@ -2424,16 +2490,21 @@ def generate_eudr_pdf(
                 with PILImage.open(context_map) as src:
                     w, h = src.size
 
-                scale = min(
-                    (17 * cm) / w,
-                    (10 * cm) / h
-                )
+                # Format paysage : largeur fixe 17 cm,
+                # hauteur déduite du ratio réel de l'image.
+                display_w = 17 * cm
+                display_h = display_w * h / w
+
+                # Garde-fou : ne pas dépasser 12 cm de haut
+                if display_h > 12 * cm:
+                    display_h = 12 * cm
+                    display_w = display_h * w / h
 
                 content.append(
                     Image(
                         context_map,
-                        width=w * scale,
-                        height=h * scale,
+                        width=display_w,
+                        height=display_h,
                     )
                 )
 
