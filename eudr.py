@@ -1,4 +1,4 @@
-# v3.2 - FINAL: Double validation loss_percentage, positionnement screening strict
+# v2.5 - CORRIGIDO: Migration SQLite, diagnostics EE, logs conservés
 import uuid
 import sqlite3
 import os
@@ -22,14 +22,20 @@ try:
     if os.path.exists(cred_path):
         with open(cred_path, "r") as f:
             credentials_info = json.load(f)
-        credentials = ee.ServiceAccountCredentials(credentials_info["client_email"], key_data=json.dumps(credentials_info))
+        credentials = ee.ServiceAccountCredentials(
+            credentials_info["client_email"],
+            key_data=json.dumps(credentials_info)
+        )
         ee.Initialize(credentials, project=EE_PROJECT)
         EE_INITIALIZED = True
     else:
         credentials_json = os.getenv("EE_CREDENTIALS_JSON")
         if credentials_json:
             credentials_info = json.loads(credentials_json)
-            credentials = ee.ServiceAccountCredentials(credentials_info["client_email"], key_data=credentials_json)
+            credentials = ee.ServiceAccountCredentials(
+                credentials_info["client_email"],
+                key_data=credentials_json
+            )
             ee.Initialize(credentials, project=EE_PROJECT)
             EE_INITIALIZED = True
         else:
@@ -47,73 +53,98 @@ def init_db():
     c = conn.cursor()
     c.execute("""
     CREATE TABLE IF NOT EXISTS audits (
-        audit_id TEXT PRIMARY KEY, farm_name TEXT, latitude REAL, longitude REAL,
-        risk_score INTEGER, risk_level TEXT, eudr_compliant TEXT, tree_cover INTEGER,
-        loss_year INTEGER, source TEXT, polygon_points TEXT, status TEXT,
-        issuer TEXT, signature TEXT, created_at TEXT
+        audit_id TEXT PRIMARY KEY,
+        farm_name TEXT,
+        latitude REAL,
+        longitude REAL,
+        risk_score INTEGER,
+        risk_level TEXT,
+        eudr_compliant TEXT,
+        tree_cover INTEGER,
+        loss_year INTEGER,
+        source TEXT,
+        polygon_points TEXT,
+        status TEXT,
+        issuer TEXT,
+        signature TEXT,
+        created_at TEXT
     )
     """)
+    # MIGRATION : Ajout de dataset_version si elle n'existe pas
     c.execute("PRAGMA table_info(audits)")
     columns = [row[1] for row in c.fetchall()]
     if "dataset_version" not in columns:
+        print("🔄 Migration DB : ajout de la colonne dataset_version")
         c.execute("ALTER TABLE audits ADD COLUMN dataset_version TEXT")
+    
     conn.commit()
     conn.close()
 
 # ========== GFW API ==========
 def compute_risk_gfw(lat: float, lon: float):
-    if not GFW_API_KEY: return None
+    if not GFW_API_KEY:
+        return None
     try:
         url = f"https://data-api.globalforestwatch.org/dataset/umd_tree_cover_density_2000/v1.6/query/json?sql=SELECT%20treeCover%20FROM%20umd_tree_cover_density_2000%20WHERE%20latitude={lat}%20AND%20longitude={lon}"
-        response = requests.get(url, headers={"x-api-key": GFW_API_KEY}, timeout=10)
-        if response.status_code != 200: return None
+        headers = {"x-api-key": GFW_API_KEY}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return None
         data = response.json()
-        
-        tree_cover = None
+        tree_cover = 0
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-            tree_cover = data["data"][0].get("treeCover")
+            tree_cover = data["data"][0].get("treeCover", 0)
         elif "treeCover" in data:
-            tree_cover = data.get("treeCover")
-
-        if tree_cover is None or not isinstance(tree_cover, (int, float)): return None
-        if not math.isfinite(tree_cover) or tree_cover < 0 or tree_cover > 100: return None
-            
-        return {"tree_cover": int(tree_cover), "source": "gfw"}
+            tree_cover = data.get("treeCover", 0)
+        return {"tree_cover": tree_cover, "source": "gfw"}
     except Exception:
         return None
 
 # ========== EARTH ENGINE API ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
-    if not EE_INITIALIZED: return None
+    if not EE_INITIALIZED:
+        return None
+
     try:
         if polygon and len(polygon) >= 3:
             geometry = ee.Geometry.Polygon(polygon)
         else:
-            geometry = ee.Geometry.Point(lon, lat).buffer(30)
+            point = ee.Geometry.Point(lon, lat)
+            geometry = point.buffer(30)
 
         dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
-        
-        treecover_val = dataset.select('treecover2000').reduceRegion(
-            reducer=ee.Reducer.mean(), geometry=geometry, scale=30, maxPixels=1e9
+        treecover = dataset.select('treecover2000')
+        lossyear = dataset.select('lossyear')
+
+        treecover_val = treecover.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=geometry,
+            scale=30,
+            maxPixels=1e9
         ).get('treecover2000').getInfo()
         
-        if treecover_val is None or not isinstance(treecover_val, (int, float)) or not math.isfinite(treecover_val) or treecover_val < 0 or treecover_val > 100:
-            tree_cover = -1
-        else:
-            tree_cover = int(round(treecover_val))
+        tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
 
-        valid_pixels = dataset.select('lossyear').reduceRegion(
-            reducer=ee.Reducer.count(), geometry=geometry, scale=30, maxPixels=1e9
+        valid_pixels = lossyear.reduceRegion(
+            reducer=ee.Reducer.count(),
+            geometry=geometry,
+            scale=30,
+            maxPixels=1e9
         ).get('lossyear').getInfo()
 
-        if valid_pixels is None or not isinstance(valid_pixels, (int, float)) or not math.isfinite(valid_pixels) or valid_pixels <= 0 or tree_cover == -1:
+        if valid_pixels is None or valid_pixels == 0 or tree_cover == -1:
+            print("⚠️ EE: Aucun pixel valide analysé ou tree_cover invalide")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
-        loss_hist = dataset.select('lossyear').reduceRegion(
-            reducer=ee.Reducer.frequencyHistogram(), geometry=geometry, scale=30, maxPixels=1e9
+        loss_hist = lossyear.reduceRegion(
+            reducer=ee.Reducer.frequencyHistogram(),
+            geometry=geometry,
+            scale=30,
+            maxPixels=1e9
         ).get('lossyear').getInfo()
 
         if not isinstance(loss_hist, dict) or not loss_hist:
+            print("⚠️ EE: Histogramme des pertes vide ou invalide")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
         try:
@@ -136,6 +167,20 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 if year_int > last_loss_year:
                     last_loss_year = year_int
 
+            # ===============================================
+            # DIAGNOSTIC EARTH ENGINE
+            # ===============================================
+            print("=== TDM EARTH ENGINE DIAGNOSTIC ===")
+            print(f"Tree cover: {treecover_val}")
+            print(f"Valid pixels: {valid_pixels}")
+            print(f"Loss histogram: {loss_hist}")
+            print(f"Histogram total: {histogram_pixels}")
+            print(f"Difference: {abs(histogram_pixels - valid_pixels)}")
+            print(f"Post-2020 pixels: {post_2020_pixels}")
+            print(f"Last loss year index: {last_loss_year}")
+            print("=== END DIAGNOSTIC ===")
+            # ===============================================
+
             if not math.isfinite(histogram_pixels) or histogram_pixels <= 0 or abs(histogram_pixels - valid_pixels) > 0.01:
                 raise ValueError("Histogram mismatch")
 
@@ -143,15 +188,19 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             if not math.isfinite(loss_percentage) or loss_percentage < 0 or loss_percentage > 100:
                 raise ValueError("Invalid percentage")
 
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as e:
+            print(f"⚠️ EE: Erreur lors du traitement de l'histogramme : {e}")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
         return {
-            "tree_cover": tree_cover, "loss_percentage": loss_percentage,
+            "tree_cover": tree_cover,
+            "loss_percentage": loss_percentage,
             "last_loss_year": 2000 + last_loss_year if last_loss_year > 0 else 0,
-            "source": "ee", "insufficient_data": False
+            "source": "ee",
+            "insufficient_data": False
         }
-    except Exception:
+    except Exception as e:
+        print(f"❌ Earth Engine error: {e}")
         return None
 
 # ========== ORCHESTRATEUR ==========
@@ -161,22 +210,16 @@ def compute_risk(lat: float, lon: float, polygon=None):
         if result.get("insufficient_data"):
             return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", "tree_cover": result["tree_cover"], "loss_year": -1, "source": result["source"], "dataset_version": DATASET_VERSION}
 
-        loss_pct = result.get("loss_percentage")
+        loss_pct = result["loss_percentage"]
         
-        # Double validation (défense en profondeur)
-        if loss_pct is None or not isinstance(loss_pct, (int, float)) or not math.isfinite(loss_pct) or loss_pct < 0 or loss_pct > 100:
-            return {"risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", "tree_cover": result.get("tree_cover", -1), "loss_year": -1, "source": "ee", "dataset_version": DATASET_VERSION}
-
         if loss_pct > 5.0:
             risk_score, risk_level, status = 100, "HIGH", "POTENTIAL LOSS SIGNAL"
-        elif loss_pct >= 1.0:
+        elif loss_pct > 1.0:
             risk_score, risk_level, status = 50, "MEDIUM", "POTENTIAL LOSS SIGNAL"
-        elif loss_pct > 0.0:
-            risk_score, risk_level, status = 10, "LOW", "BELOW TDM SCREENING THRESHOLD"
         else:
             risk_score, risk_level, status = 0, "LOW", "NO POST-2020 LOSS DETECTED"
             
-        return {"risk_score": risk_score, "risk_level": risk_level, "eudr_status": status, "tree_cover": result["tree_cover"], "loss_year": result.get("last_loss_year", 0), "source": result["source"], "dataset_version": DATASET_VERSION}
+        return {"risk_score": risk_score, "risk_level": risk_level, "eudr_status": status, "tree_cover": result["tree_cover"], "loss_year": result["last_loss_year"], "source": result["source"], "dataset_version": DATASET_VERSION}
 
     result = compute_risk_gfw(lat, lon)
     if result:
