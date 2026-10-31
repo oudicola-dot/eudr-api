@@ -506,7 +506,7 @@ def fetch_osm_places(lat, lon, radius_m=3000):
 def _fetch_satellite_image(
     polygon_points,
     buffer_m,
-    image_size=800
+    image_size=1800
 ):
     """
     Sentinel-2 via Earth Engine.
