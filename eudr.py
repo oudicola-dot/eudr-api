@@ -127,6 +127,15 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
 
                 valid_pixels = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(),
+                        geometry=geometry,
+            scale=30,
+            maxPixels=1e9
+        ).get('treecover2000').getInfo()
+
+        tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
+
+        valid_pixels = lossyear.reduceRegion(
+            reducer=ee.Reducer.count().unweighted(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
