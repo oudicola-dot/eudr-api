@@ -1,4 +1,4 @@
-# v2.9 - Calcul surfacique pondéré pour les petites parcelles
+# v3.0 - Seuil de couverture des données (10%) et validation stricte
 import uuid
 import sqlite3
 import os
@@ -114,7 +114,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
-        # 1. Calcul du Tree Cover (moyenne pondérée, conservé)
+        # 1. Calcul du Tree Cover (moyenne pondérée)
         treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
@@ -124,10 +124,8 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         
         tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
 
-        # 2. CALCUL SURFACIQUE PONDÉRÉ (remplace l'histogramme)
+        # 2. CALCUL SURFACIQUE PONDÉRÉ
         pixel_area = ee.Image.pixelArea()
-
-        # Surface totale de la parcelle en m² (méthode géométrique, plus précise)
         parcel_area_m2 = geometry.area(maxError=1).getInfo()
 
         # Surface "valide" (couverte par la donnée lossyear)
@@ -153,25 +151,43 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         ).getInfo()
         post_2020_area_m2 = post_2020_area_dict.get('area', 0) if post_2020_area_dict else 0
 
+        # ===============================================
         # 3. DIAGNOSTIC BRUT
+        # ===============================================
         print("=== TDM EARTH ENGINE AREA DIAGNOSTIC ===")
         print(f"Tree cover: {treecover_val}")
         print(f"Parcel area (geometric): {parcel_area_m2} m²")
         print(f"Valid area (lossyear): {valid_area_m2} m²")
         print(f"Post-2020 loss area: {post_2020_area_m2} m²")
-        coverage_pct = (valid_area_m2 / parcel_area_m2 * 100) if parcel_area_m2 > 0 else 0
-        print(f"Data coverage: {coverage_pct:.2f}%")
         print("=== END AREA DIAGNOSTIC ===")
 
-        # 4. VALIDATION
-        if valid_area_m2 is None or valid_area_m2 == 0 or tree_cover == -1:
-            print("=== TDM EARTH ENGINE EARLY EXIT ===")
-            print(f"Tree cover: {treecover_val}")
-            print(f"Converted tree cover: {tree_cover}")
-            print(f"Valid area: {valid_area_m2} m²")
-            print(f"Tree cover invalid: {tree_cover == -1}")
-            print("Reason: INSUFFICIENT VALID AREA")
-            print("=== END EARLY EXIT ===")
+        # ===============================================
+        # 4. VALIDATION DE LA COUVERTURE DES DONNÉES
+        # Seuil TDM expérimental : 10 %
+        # ===============================================
+        valid_area_m2 = valid_area_m2 or 0
+        parcel_area_m2 = parcel_area_m2 or 0
+        
+        coverage_pct = (
+            valid_area_m2 / parcel_area_m2 * 100
+            if parcel_area_m2 > 0
+            else 0
+        )
+        
+        print("=== TDM EARTH ENGINE AREA VALIDATION ===")
+        print(f"Parcel area: {parcel_area_m2} m²")
+        print(f"Valid area: {valid_area_m2} m²")
+        print(f"Data coverage: {coverage_pct:.4f}%")
+        print("Minimum required coverage: 10.0%")
+        print("=== END AREA VALIDATION ===")
+
+        if (
+            valid_area_m2 <= 0
+            or parcel_area_m2 <= 0
+            or tree_cover == -1
+            or coverage_pct < 10.0
+        ):
+            print("⚠️ TDM: Insufficient valid data coverage")
             return {
                 "tree_cover": tree_cover,
                 "loss_percentage": -1,
@@ -180,13 +196,14 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 "insufficient_data": True
             }
 
+        # ===============================================
         # 5. CALCUL DU POURCENTAGE DE PERTE
+        # ===============================================
         loss_percentage = (post_2020_area_m2 / valid_area_m2) * 100
 
         # 6. DÉTECTION DE LA DERNIÈRE ANNÉE DE PERTE
         last_loss_year = 0
         if post_2020_area_m2 > 0:
-            # Réduction pondérée pour trouver l'année max avec perte
             lossyear_weighted = lossyear.updateMask(post_2020_mask).reduceRegion(
                 reducer=ee.Reducer.max(),
                 geometry=geometry,
