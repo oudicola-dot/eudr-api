@@ -1,14 +1,3 @@
-Pas de panique ! **Un commit n'est jamais définitif sur GitHub.** On va simplement appliquer la correction demandée par ton conseiller dans un nouveau commit (un "fix"). Le code que tu as mis en ligne fonctionne, il manque juste d'un peu de précision dans les messages d'erreur pour être parfaitement carré.
-
-Ce que ton conseiller demande est très pertinent :
-1.  **Distinguer les erreurs de `valid_pixels`** : Si c'est vide (`None`), on doit dire `NO_VALID_LOSS_PIXELS`. Si c'est un nombre bizarre (ex: 105.5), on doit dire `INVALID_VALID_PIXEL_COUNT`.
-2.  **Priorité aux erreurs techniques** : Si Earth Engine plante (ex: bucket `null`) *et* que la couverture est mauvaise, on doit afficher l'erreur Earth Engine (plus précise pour le débogage) plutôt que de simplement dire "Couverture < 10%".
-
-Voici le fichier `eudr.py` **final et corrigé** avec ces deux ajustements. 
-
-Tu peux copier-coller ce bloc par-dessus ton fichier actuel et refaire un commit (ex: `fix: precision des raisons d'insuffisance et priorite diagnostic`).
-
-```python
 # v2.7 - Déplacement du diagnostic brut avant le traitement des clés
 # + Livrable 0.1 - Marqueur de build
 # + Étape 1a - Métriques de couverture, raisons d'insuffisance séparées, persistance et propagation
@@ -428,6 +417,3 @@ def get_audit(audit_id: str):
         "insufficient_reason": row[19],
         "treecover_reason": row[20]
     }
-```
-
-Tu peux faire le nouveau commit avec ce code. Render va redéployer (la DB va s'effacer, mais on s'en fiche, c'était des tests). Une fois déployé, c'est la version définitive de l'Étape 1b !
