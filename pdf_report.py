@@ -33,7 +33,6 @@ import eudr  # Accès à eudr.EE_INITIALIZED
 # DÉPENDANCES OPTIONNELLES
 # ==========================================
 
-# Sécurité Pillow (fallback logo)
 try:
     from PIL import Image as PILImage, ImageDraw, ImageFont
     HAS_PIL = True
@@ -42,7 +41,6 @@ except ImportError:
     HAS_PIL = False
 
 
-# Earth Engine — déjà importé par eudr.py
 try:
     import ee
     HAS_EE = True
@@ -582,7 +580,7 @@ def _fetch_satellite_image(
         # ======================================
         # EE fitte le ROI dans les dimensions demandées.
         # Pour éviter toute déformation, on étend le ROI
-        # au ratio cible (ex. 1800×1100 = 1.636).
+        # au ratio cible (ex. 1400×850 ≈ 1.647).
         # Calcul en mètres (projection locale) pour un
         # ratio correct à toutes les latitudes.
 
@@ -787,15 +785,40 @@ def _fetch_satellite_image(
 
     try:
 
+        # ======================================
+        # ANTI-PIXELLISATION
+        # ======================================
+        # Les bandes B4/B3/B2 de S2 sont à 10 m natifs.
+        # Si l'étendue géographique (en mètres) est bien
+        # supérieure à image_size * 10 m, EE interpole
+        # fortement (visible en blocs). On active un
+        # rééchantillonnage bicubique pour lisser, et on
+        # loggue le facteur d'interpolation pour diagnostic.
+
+        width_m_est = abs(max_lon - min_lon) * 111320.0 * math.cos(
+            math.radians((min_lat + max_lat) / 2.0)
+        )
+        upsample_x = (
+            image_size[0] / (width_m_est / 10.0)
+            if width_m_est > 0 else 1.0
+        )
+
+        print(
+            f"🔎 Étape D — extent≈{width_m_est:.0f} m, "
+            f"upsample×{upsample_x:.1f} "
+            f"(10 m natif → {image_size[0]} px demandés)"
+        )
+
         url = (
             final.visualize(
                 bands=["B4", "B3", "B2"],
                 min=0,
                 max=3000,
             )
+            .resample("bicubic")
             .getThumbURL({
                 "region": roi,
-                'dimensions': f'{image_size[0]}x{image_size[1]}',
+                "dimensions": f"{image_size[0]}x{image_size[1]}",
                 "format": "png",
             })
         )
@@ -882,10 +905,6 @@ def _fetch_satellite_image(
     # --------------------------------------
 
     try:
-
-        # getInfo() retourne un dictionnaire GeoJSON :
-        # {"type": "Polygon", "coordinates": [...]}
-        # et non une liste directement indexable par [0].
 
         bounds_info = roi.bounds().getInfo()
 
@@ -1347,17 +1366,28 @@ def generate_parcel_map(
 ):
     """
     Carte parcellaire :
-      - buffer 200 m
+      - buffer 250 m (plus de contexte autour de
+        la parcelle → plus de pixels S2 natifs
+        → moins d'interpolation EE)
       - échelle cible 100 m
+      - image_size 1400×850 : ratio 1.647, moins
+        d'interpolation qu'en 1800×1100 pour une
+        parcelle de taille modeste
     """
 
     img, info, bounds, error = _fetch_satellite_image(
         polygon_points,
-        buffer_m=200
+        buffer_m=250,
+        image_size=(1400, 850),
     )
 
     if img is None:
+        print(
+            f"❌ CARTE PARCELLAIRE — échec EE : {error}"
+        )
         return None, None, error
+
+    print("✅ CARTE PARCELLAIRE — image EE obtenue")
 
     try:
 
@@ -1413,7 +1443,12 @@ def generate_context_map(
     )
 
     if img is None:
+        print(
+            f"❌ CARTE CONTEXTE — échec EE : {error}"
+        )
         return None, None, error
+
+    print("✅ CARTE CONTEXTE — image EE obtenue")
 
     places = fetch_osm_places(
         lat,
@@ -1797,6 +1832,11 @@ def generate_eudr_pdf(
                     )
                 )
 
+                print(
+                    f"✅ CARTE PARCELLAIRE — insérée dans le PDF "
+                    f"({display_w/cm:.2f} cm × {display_h/cm:.2f} cm)"
+                )
+
                 if parcel_info:
 
                     content.append(
@@ -1832,6 +1872,11 @@ def generate_eudr_pdf(
 
             reason = html.escape(
                 parcel_err or "unavailable"
+            )
+
+            print(
+                f"❌ CARTE PARCELLAIRE — non insérée. "
+                f"Raison : {parcel_err}"
             )
 
             map_box = Table(
@@ -2124,10 +2169,6 @@ def generate_eudr_pdf(
             period_text = (
                 "• Dataset Coverage: 2001–2023<br/>"
             )
-
-        # Hansen 30 m seulement si :
-        # source == "ee"
-        # ET dataset_version correspond au dataset attendu.
 
         hansen_line = (
             "• Hansen Global Forest Change: "
@@ -2508,6 +2549,11 @@ def generate_eudr_pdf(
                     )
                 )
 
+                print(
+                    f"✅ CARTE CONTEXTE — insérée dans le PDF "
+                    f"({display_w/cm:.2f} cm × {display_h/cm:.2f} cm)"
+                )
+
                 if context_info:
 
                     content.append(
@@ -2540,6 +2586,11 @@ def generate_eudr_pdf(
 
             reason = html.escape(
                 context_err or "unavailable"
+            )
+
+            print(
+                f"❌ CARTE CONTEXTE — non insérée. "
+                f"Raison : {context_err}"
             )
 
             content.append(
@@ -2655,6 +2706,17 @@ def generate_eudr_pdf(
             Paragraph(
                 f"Verify at: {html.escape(verify_url)}",
                 styles["TDMLegal"]
+            )
+        )
+
+        # Marqueur de diagnostic : garantit du texte
+        # extractible même si la carte a échoué.
+        content.append(
+            Paragraph(
+                "<font size='6' color='#AAAAAA'>"
+                "END OF REPORT — context page rendered"
+                "</font>",
+                styles["TDMLegal"],
             )
         )
 
