@@ -1,7 +1,18 @@
+Pas de panique ! **Un commit n'est jamais définitif sur GitHub.** On va simplement appliquer la correction demandée par ton conseiller dans un nouveau commit (un "fix"). Le code que tu as mis en ligne fonctionne, il manque juste d'un peu de précision dans les messages d'erreur pour être parfaitement carré.
+
+Ce que ton conseiller demande est très pertinent :
+1.  **Distinguer les erreurs de `valid_pixels`** : Si c'est vide (`None`), on doit dire `NO_VALID_LOSS_PIXELS`. Si c'est un nombre bizarre (ex: 105.5), on doit dire `INVALID_VALID_PIXEL_COUNT`.
+2.  **Priorité aux erreurs techniques** : Si Earth Engine plante (ex: bucket `null`) *et* que la couverture est mauvaise, on doit afficher l'erreur Earth Engine (plus précise pour le débogage) plutôt que de simplement dire "Couverture < 10%".
+
+Voici le fichier `eudr.py` **final et corrigé** avec ces deux ajustements. 
+
+Tu peux copier-coller ce bloc par-dessus ton fichier actuel et refaire un commit (ex: `fix: precision des raisons d'insuffisance et priorite diagnostic`).
+
+```python
 # v2.7 - Déplacement du diagnostic brut avant le traitement des clés
 # + Livrable 0.1 - Marqueur de build
 # + Étape 1a - Métriques de couverture, raisons d'insuffisance séparées, persistance et propagation
-# + Étape 1b - Activation du seuil de couverture QC TDM (10%)
+# + Étape 1b - Activation du seuil de couverture QC TDM (10%) et précision des diagnostics
 import uuid
 import sqlite3
 import os
@@ -175,17 +186,21 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
         ).get('lossyear').getInfo()
 
+        # CORRECTION : Distinction fine des erreurs de comptage
         if not isinstance(valid_pixels_raw, (int, float)) or not math.isfinite(valid_pixels_raw) or valid_pixels_raw <= 0:
             loss_insufficient = True
             valid_pixels = None
+            pixel_error_reason = "NO_VALID_LOSS_PIXELS"
         else:
             if abs(valid_pixels_raw - round(valid_pixels_raw)) > 1e-6:
                 print(f"⚠️ EE: valid_pixels non entier reçu : {valid_pixels_raw}")
                 loss_insufficient = True
                 valid_pixels = None
+                pixel_error_reason = "INVALID_VALID_PIXEL_COUNT"
             else:
                 valid_pixels = int(round(valid_pixels_raw))
                 loss_insufficient = False
+                pixel_error_reason = None
 
         area_ha = get_polygon_area_ha(polygon) if polygon else None
         nominal_pixels_estimate = None
@@ -253,10 +268,13 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                     hist_reason = str(e) if str(e) in ["NULL_BUCKET", "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE", "INVALID_YEAR", "INVALID_COUNT"] else "INVALID_DATA"
                     print(f"⚠️ EE: Erreur histogramme : {hist_reason}")
 
+        # Détermination de la raison finale
         is_loss_insufficient = loss_insufficient or hist_insufficient
         
-        if is_loss_insufficient:
-            insufficient_reason = hist_reason if hist_reason else "NO_VALID_LOSS_PIXELS"
+        if hist_insufficient:
+            insufficient_reason = hist_reason # Priorité 1 : Erreur Earth Engine
+        elif loss_insufficient:
+            insufficient_reason = pixel_error_reason # Priorité 2 : Erreur de comptage
         else:
             insufficient_reason = None
 
@@ -280,7 +298,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
 def compute_risk(lat: float, lon: float, polygon=None):
     result = compute_risk_ee(lat, lon, polygon)
     if result:
-        # 1. D'abord, on vérifie si l'analyse des pertes a échoué techniquement
+        # PRIORITÉ 1 : Erreur technique (histogramme ou pertes)
         if result.get("insufficient_data"):
             return {
                 "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", 
@@ -292,7 +310,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "insufficient_reason": result["insufficient_reason"], "treecover_reason": result["treecover_reason"]
             }
 
-        # 2. Ensuite, on applique le seuil de couverture (Étape 1b)
+        # PRIORITÉ 2 : Seuil de couverture (Étape 1b)
         coverage = result.get("estimated_coverage_pct")
         if coverage is None or coverage < TDM_SCREENING_THRESHOLD_PCT:
             return {
@@ -306,7 +324,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "treecover_reason": result["treecover_reason"]
             }
 
-        # 3. Si tout est bon, on applique les seuils métiers
+        # PRIORITÉ 3 : Succès, on applique les seuils métiers
         loss_pct = result["loss_percentage"]
         if loss_pct > 5.0:
             risk_score, risk_level, status = 100, "HIGH", "POTENTIAL LOSS SIGNAL"
@@ -410,3 +428,6 @@ def get_audit(audit_id: str):
         "insufficient_reason": row[19],
         "treecover_reason": row[20]
     }
+```
+
+Tu peux faire le nouveau commit avec ce code. Render va redéployer (la DB va s'effacer, mais on s'en fiche, c'était des tests). Une fois déployé, c'est la version définitive de l'Étape 1b !
