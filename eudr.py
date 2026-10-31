@@ -1,4 +1,4 @@
-# v2.5 - CORRIGIDO: Migration SQLite, diagnostics EE, logs conservés
+# v2.7 - Déplacement du diagnostic brut avant le traitement des clés
 import uuid
 import sqlite3
 import os
@@ -125,7 +125,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         
         tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
 
-        # MODIFICATION 1 : Ajout de .unweighted() sur count()
         valid_pixels = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(),
             geometry=geometry,
@@ -137,7 +136,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             print("⚠️ EE: Aucun pixel valide analysé ou tree_cover invalide")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
-        # MODIFICATION 2 : Ajout de .unweighted() sur frequencyHistogram()
         loss_hist = lossyear.reduceRegion(
             reducer=ee.Reducer.frequencyHistogram().unweighted(),
             geometry=geometry,
@@ -149,6 +147,16 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             print("⚠️ EE: Histogramme des pertes vide ou invalide")
             return {"tree_cover": tree_cover, "loss_percentage": -1, "last_loss_year": -1, "source": "ee", "insufficient_data": True}
 
+        # ===============================================
+        # DIAGNOSTIC BRUT (Déplacé avant le traitement)
+        # ===============================================
+        print("=== TDM EARTH ENGINE RAW DIAGNOSTIC ===")
+        print(f"Tree cover: {treecover_val}")
+        print(f"Valid pixels: {valid_pixels}")
+        print(f"Raw loss histogram: {loss_hist}")
+        print("=== END RAW DIAGNOSTIC ===")
+        # ===============================================
+
         try:
             histogram_pixels = 0
             post_2020_pixels = 0
@@ -158,6 +166,10 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 count_float = float(count)
                 if not math.isfinite(count_float) or count_float < 0:
                     raise ValueError("Invalid count")
+                
+                # Gestion stricte de la clé 'null' ou None
+                if year_str is None or str(year_str).strip().lower() in ("null", "none", ""):
+                    raise ValueError(f"Null year bucket returned by Earth Engine: count={count}")
                 
                 year_int = int(year_str)
                 if year_int < 0 or year_int > 23:
@@ -169,19 +181,13 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 if year_int > last_loss_year:
                     last_loss_year = year_int
 
-            # ===============================================
-            # DIAGNOSTIC EARTH ENGINE
-            # ===============================================
+            # Diagnostic détaillé (après traitement)
             print("=== TDM EARTH ENGINE DIAGNOSTIC ===")
-            print(f"Tree cover: {treecover_val}")
-            print(f"Valid pixels: {valid_pixels}")
-            print(f"Loss histogram: {loss_hist}")
             print(f"Histogram total: {histogram_pixels}")
             print(f"Difference: {abs(histogram_pixels - valid_pixels)}")
             print(f"Post-2020 pixels: {post_2020_pixels}")
             print(f"Last loss year index: {last_loss_year}")
             print("=== END DIAGNOSTIC ===")
-            # ===============================================
 
             if not math.isfinite(histogram_pixels) or histogram_pixels <= 0 or abs(histogram_pixels - valid_pixels) > 0.01:
                 raise ValueError("Histogram mismatch")
