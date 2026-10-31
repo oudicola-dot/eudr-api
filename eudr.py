@@ -127,6 +127,8 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
 
         valid_pixels = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(),
+                    valid_pixels = lossyear.reduceRegion(
+            reducer=ee.Reducer.count().unweighted(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
