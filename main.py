@@ -131,7 +131,20 @@ async def eudr_check(request: Request, payload: dict):
             if isinstance(e, HTTPException): raise e
             raise HTTPException(status_code=400, detail="Polygon validation failed.")
 
-        polygon = valid_poly
+               polygon = valid_poly
+
+    # TEMPORARY DIAGNOSTIC — do not remove existing validation
+    print("=== TDM POLYGON COORDINATE CHECK ===")
+    print(f"Farm latitude: {lat}")
+    print(f"Farm longitude: {lon}")
+    print(f"Polygon points including closure: {len(polygon) if polygon else 0}")
+
+    if polygon:
+        print(f"First point [lon, lat]: {polygon[0]}")
+        print(f"Last point [lon, lat]: {polygon[-1]}")
+        print(f"Polygon bounds [min_lon, min_lat, max_lon, max_lat]: {poly_shape.bounds}")
+
+    print("=== END TDM POLYGON COORDINATE CHECK ===")
 
     audit = await run_in_threadpool(create_audit, name, lat, lon, polygon)
     audit_id = audit["audit_id"]
