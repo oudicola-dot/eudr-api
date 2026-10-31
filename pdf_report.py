@@ -14,6 +14,15 @@ from reportlab.lib.enums import TA_CENTER
 from security import sign_audit
 from shapely.geometry import Polygon
 from pyproj import Geod
+from eudr import get_audit # <-- Récupération des métriques SQLite
+
+# Sécurité pour Pillow : si absent du requirements.txt, le code ne plante pas au démarrage
+try:
+    from PIL import Image as PILImage
+    HAS_PIL = True
+except ImportError:
+    print("⚠️ Pillow non installé. La vérification avancée du logo est désactivée.")
+    HAS_PIL = False
 
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
@@ -30,13 +39,25 @@ def get_logo():
         r = requests.get(LOGO_URL, timeout=8, headers=headers)
         r.raise_for_status()
         
-        # VÉRIFICATION CRUCIALE : Est-ce que c'est bien une image ?
+        # VÉRIFICATION 1 : Content-Type (Basique)
         content_type = r.headers.get('Content-Type', '')
         if not content_type.startswith('image/'):
             print(f"❌ LOGO ERROR: Received {content_type} instead of an image.")
             return None
             
-        print("✅ LOGO DOWNLOADED")
+        # VÉRIFICATION 2 : Décodabilité avec Pillow (si disponible)
+        if HAS_PIL:
+            try:
+                img_bytes = r.content
+                img = PILImage.open(io.BytesIO(img_bytes))
+                img.verify()
+                print("✅ LOGO DOWNLOADED AND VERIFIED (Pillow)")
+                return io.BytesIO(img_bytes)
+            except Exception as e:
+                print(f"❌ LOGO ERROR: Image non décodable - {e}")
+                return None
+            
+        print("✅ LOGO DOWNLOADED (Basic check)")
         return io.BytesIO(r.content)
     except Exception as e:
         print("❌ LOGO DOWNLOAD ERROR:", str(e))
@@ -90,8 +111,16 @@ def calculate_geometry(polygon_points):
     except:
         return "Calculation error", "N/A"
 
-def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown"):
+def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown", **kwargs):
     
+    # RÉCUPÉRATION DES MÉTRIQUES DEPUIS SQLITE (Sans modifier main.py)
+    full_audit = get_audit(audit_id) or {}
+    valid_pixels = full_audit.get("valid_pixels")
+    nominal_pixels = full_audit.get("nominal_pixels_estimate")
+    coverage_pct = full_audit.get("estimated_coverage_pct")
+    insufficient_reason = full_audit.get("insufficient_reason")
+    treecover_reason = full_audit.get("treecover_reason")
+
     temp_id = uuid.uuid4().hex
     file_path = f"/tmp/{audit_id}_{temp_id}.pdf"
     qr_path = f"/tmp/{audit_id}_{temp_id}_qr.png"
@@ -123,6 +152,13 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
     centroid_str, area_str = calculate_geometry(polygon_points) if polygon_points else (f"{lat:.6f}, {lon:.6f}", "N/A")
     
+    # CORRECTION 1 : Calcul du nombre de sommets distincts
+    display_point_count = (
+        len(polygon_points) - 1 
+        if polygon_points and len(polygon_points) >= 2 and polygon_points[0] == polygon_points[-1] 
+        else len(polygon_points) if polygon_points else None
+    )
+    
     id_data = [
         [Paragraph("Report ID", styles['TDMLabel']), Paragraph("Generated on", styles['TDMLabel']), Paragraph("Producer / Farm", styles['TDMLabel']), Paragraph("Centroid", styles['TDMLabel'])],
         [Paragraph(safe_id, styles['TDMValue']), Paragraph(current_date, styles['TDMValue']), Paragraph(safe_name, styles['TDMValue']), Paragraph(centroid_str, styles['TDMValue'])]
@@ -132,12 +168,20 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
     content.append(id_table)
     content.append(Spacer(1, 0.5*cm))
 
-    map_box = Table([[Paragraph(f"Total Area: {area_str}<br/>Boundary points: {len(polygon_points) if polygon_points else 'Point mode'}", styles['TDMValue'])]], colWidths=[17*cm], rowHeights=[3*cm])
+    map_box = Table([[Paragraph(f"Total Area: {area_str}<br/>Boundary points: {display_point_count if display_point_count is not None else 'Point mode'}", styles['TDMValue'])]], colWidths=[17*cm], rowHeights=[3*cm])
     map_box.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), TDM_LIGHT_GREEN), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BOX', (0,0), (-1,-1), 1, TDM_GREEN)]))
     content.append(map_box)
     content.append(Spacer(1, 0.5*cm))
 
-    status_color = "#1E3A32" if "NO POST-2020" in safe_status else "#CC0000" if "POTENTIAL" in safe_status else "#888888"
+    # COULEURS INSTITUTIONNELLES DES STATUTS (Vert, Rouge, Ambre)
+    if "NO POST-2020" in safe_status:
+        status_color = "#1E3A32"  # Vert sombre
+    elif "POTENTIAL" in safe_status:
+        status_color = "#CC0000"  # Rouge
+    elif "INSUFFICIENT DATA" in safe_status:
+        status_color = "#D97706"  # Ambre foncé
+    else:
+        status_color = "#F59E0B"  # Ambre clair (Analysis Unavailable)
     
     tc_display = format_val(tree_cover, "%", 0, 100)
     score_display = format_val(risk_score, "", 0, 100)
@@ -170,6 +214,43 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
     method_text = f"<b>Data & Methodology</b><br/>• Data Source: {html.escape(source_desc)}<br/>• Dataset Version: {html.escape(str(dataset_version))}<br/>{period_text}• EUDR Reference Date: 31 Dec 2020<br/>• Spatial Resolution: 30m (when applicable)<br/><br/><i>Note: This report is a general agricultural territorial screening. It does not certify compliance with EUDR, which only applies to specific commodities and operators.</i>"
     content.append(Paragraph(method_text, styles['TDMValue']))
     content.append(Spacer(1, 0.5*cm))
+
+    # BLOC : NOUVELLES MÉTRIQUES DE COUVERTURE (Étape 2a)
+    if (coverage_pct is not None 
+        or valid_pixels is not None 
+        or insufficient_reason 
+        or treecover_reason):
+        
+        content.append(Paragraph("Screening Quality & Coverage Metrics", styles['TDMSection']))
+        
+        # CORRECTION 2 : Affichage propre et alerte si la couverture dépasse 100%
+        if (isinstance(coverage_pct, (int, float)) 
+            and not isinstance(coverage_pct, bool) 
+            and math.isfinite(coverage_pct) 
+            and coverage_pct >= 0):
+            cov_display = f"<b>{coverage_pct:.2f}%</b>"
+            if coverage_pct > 100:
+                cov_display += "<br/><font color='#D97706'>Above nominal estimate</font>"
+        else:
+            cov_display = "N/A"
+        
+        metrics_data = [
+            [Paragraph("Estimated Coverage", styles['TDMLabel']), Paragraph("Valid Pixels", styles['TDMLabel']), Paragraph("Nominal Pixels (Estimate)", styles['TDMLabel'])],
+            [Paragraph(cov_display, styles['TDMValue']), 
+             Paragraph(f"{valid_pixels}" if valid_pixels is not None else "N/A", styles['TDMValue']), 
+             Paragraph(f"{nominal_pixels}" if nominal_pixels is not None else "N/A", styles['TDMValue'])]
+        ]
+        metrics_table = Table(metrics_data, colWidths=[5.66*cm]*3)
+        metrics_table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), TDM_GRAY), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey)]))
+        content.append(metrics_table)
+        content.append(Spacer(1, 0.3*cm))
+
+        if insufficient_reason:
+            content.append(Paragraph(f"<b>Insufficiency Reason:</b> {html.escape(str(insufficient_reason))}", styles['TDMValue']))
+        if treecover_reason:
+            content.append(Paragraph(f"<b>Treecover Availability:</b> {html.escape(str(treecover_reason))}", styles['TDMValue']))
+        
+        content.append(Spacer(1, 0.5*cm))
     
     if polygon_points and len(polygon_points) >= 3:
         content.append(Paragraph("Geospatial Data (Polygon)", styles['TDMSection']))
@@ -178,16 +259,15 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         
         poly_data = [[Paragraph("Point", styles['TDMLabel']), Paragraph("Latitude", styles['TDMLabel']), Paragraph("Longitude", styles['TDMLabel'])]]
         display_points = polygon_points[:-1] if polygon_points[0] == polygon_points[-1] else polygon_points
-        for i, (p_lon, p_lat) in enumerate(display_points[:30], start=1):
+        
+        # MODIFICATION : On affiche TOUS les points (plus de troncature à 30)
+        for i, (p_lon, p_lat) in enumerate(display_points, start=1):
             poly_data.append([Paragraph(str(i), styles['TDMValue']), Paragraph(f"{p_lat:.6f}", styles['TDMValue']), Paragraph(f"{p_lon:.6f}", styles['TDMValue'])])
             
-        poly_table = Table(poly_data, colWidths=[2*cm, 5*cm, 5*cm])
+        # PAGINATION : repeatRows pour garder l'en-tête sur les pages suivantes
+        poly_table = Table(poly_data, colWidths=[2*cm, 5*cm, 5*cm], repeatRows=1, splitByRow=1)
         poly_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey), ('BACKGROUND', (0,0), (-1,0), TDM_GRAY)]))
         content.append(poly_table)
-        
-        if len(display_points) > 30:
-            content.append(Spacer(1, 0.2*cm))
-            content.append(Paragraph(f"Note: {len(display_points) - 30} additional points are not displayed due to space constraints.", styles['TDMLegal']))
     
     content.append(Spacer(1, 1*cm))
     content.append(Paragraph(f"Verify at: {html.escape(verify_url)}", styles['TDMLegal']))
