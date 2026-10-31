@@ -15,6 +15,7 @@ from security import sign_audit
 from shapely.geometry import Polygon
 from pyproj import Geod
 from eudr import get_audit
+import eudr  # accès à eudr.EE_INITIALIZED
 
 # Sécurité Pillow (fallback logo)
 try:
@@ -24,16 +25,12 @@ except ImportError:
     print("⚠️ Pillow non installé. La carte satellite sera désactivée.")
     HAS_PIL = False
 
-# Earth Engine — DÉJÀ importé par eudr.py : sa présence est une dépendance
-# de l'application, pas une option. Le try/except ci-dessous ne protège que
-# le cas où pdf_report.py serait importé isolément (tests unitaires).
-# Il ne rend PAS earthengine-api facultatif pour l'application.
+# Earth Engine — DÉJÀ importé par eudr.py.
 try:
     import ee
     HAS_EE = True
 except ImportError:
-    print("⚠️ earthengine-api non importable. Les cartes seront désactivées "
-          "dans ce contexte isolé.")
+    print("⚠️ earthengine-api non importable dans ce contexte isolé.")
     HAS_EE = False
 
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
@@ -44,7 +41,7 @@ TDM_GREEN = colors.HexColor("#1E3A32")
 TDM_LIGHT_GREEN = colors.HexColor("#E8F2E8")
 TDM_GRAY = colors.HexColor("#F5F5F5")
 
-_EE_INITIALIZED = None
+_EE_CONFIRMED = False
 
 
 def get_logo():
@@ -132,44 +129,41 @@ def calculate_geometry(polygon_points):
 
 def _init_ee():
     """
-    Vérifie qu'Earth Engine est utilisable dans le processus courant.
+    Vérifie la disponibilité d'Earth Engine.
 
-    Principe : Earth Engine est initialisé par l'application (eudr.py) ou
-    par l'environnement de déploiement. Cette fonction NE tente PAS
-    d'authentification concurrente. Elle vérifie simplement, par un appel
-    de test, si EE est déjà opérationnel. Si ce n'est pas le cas, elle
-    renvoie False et les cartes sont désactivées dans le PDF — sans
-    modifier l'état d'authentification de l'application.
+    Source de vérité : eudr.EE_INITIALIZED. Aucune authentification ici,
+    aucun ee.Initialize(). Cache POSITIF uniquement.
     """
-    global _EE_INITIALIZED
-    if _EE_INITIALIZED is not None:
-        return _EE_INITIALIZED
-    if not HAS_EE:
-        _EE_INITIALIZED = False
+    global _EE_CONFIRMED
+    if not HAS_PIL or not HAS_EE:
         return False
-    try:
-        # Sonde : si EE est initialisé (par eudr.py ou l'environnement),
-        # cet appel réussit sans nouvelle authentification.
-        # Sinon, il lève une EEException et on n'ajoute aucune stratégie
-        # d'authentification concurrente.
-        ee.Number(0).getInfo()
-        _EE_INITIALIZED = True
+    if _EE_CONFIRMED:
         return True
-    except Exception:
-        print("⚠️ Earth Engine non initialisé dans ce processus. "
-              "Cartes satellite désactivées.")
-        _EE_INITIALIZED = False
+
+    ee_ready = bool(getattr(eudr, "EE_INITIALIZED", False))
+    print(f"🔎 Étape A — EE status: eudr.EE_INITIALIZED={ee_ready}")
+    if not ee_ready:
+        return False
+
+    try:
+        ee.Number(0).getInfo()
+        _EE_CONFIRMED = True
+        print("✅ Étape A — Sonde EE OK.")
+        return True
+    except Exception as e:
+        print(f"⚠️ Étape A — Sonde EE échouée : {type(e).__name__}: {e}")
         return False
 
 
 def get_territorial_context(lat, lon):
-    """Nominatim reverse geocoding, types réels préservés (pas de devinette)."""
+    """Nominatim reverse geocoding, types réels préservés."""
     try:
         headers = {'User-Agent': 'TDM-EUDR-Screening/1.0 (+https://tierrasdemontana.com; contact@tierrasdemontana.com)'}
         url = (f"https://nominatim.openstreetmap.org/reverse?format=json"
                f"&lat={lat}&lon={lon}&zoom=14&addressdetails=1")
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code != 200:
+            print(f"⚠️ Nominatim HTTP {r.status_code}")
             return None
         address = r.json().get("address", {})
 
@@ -188,7 +182,7 @@ def get_territorial_context(lat, lon):
             "country": address.get("country"),
         }
     except Exception as e:
-        print(f"⚠️ Nominatim indisponible : {type(e).__name__}")
+        print(f"⚠️ Nominatim indisponible : {type(e).__name__}: {e}")
         return None
 
 
@@ -207,6 +201,7 @@ def fetch_osm_places(lat, lon, radius_m=3000):
         r = requests.post("https://overpass-api.de/api/interpreter",
                           data={"data": query}, timeout=10)
         if r.status_code != 200:
+            print(f"⚠️ Overpass HTTP {r.status_code}")
             return []
         elements = r.json().get("elements", [])
         raw_places = []
@@ -236,36 +231,68 @@ def fetch_osm_places(lat, lon, radius_m=3000):
                 unique.append(p)
         return unique
     except Exception as e:
-        print(f"⚠️ Overpass indisponible : {type(e).__name__}")
+        print(f"⚠️ Overpass indisponible : {type(e).__name__}: {e}")
         return []
 
 
 def _fetch_satellite_image(polygon_points, buffer_m, image_size=800):
-    """Sentinel-2 via Earth Engine. Retourne (img_rgba, info_str, bounds) ou triple None."""
+    """
+    Sentinel-2 via Earth Engine.
+
+    Retourne (img_rgba, info_str, bounds, error_reason) :
+      - (img, info, bounds, None)          : succès
+      - (None, None, None, "Motif court")  : échec à une étape A→G
+
+    Diagnostics distincts :
+      A. Disponibilité EE
+      A2. Construction géométrie / dates
+      B. Accès collection Sentinel-2
+      C. Construction composite
+      D. getThumbURL
+      E. Téléchargement
+      F. Décodage Pillow
+      G. Récupération des bounds
+    """
+    # Étape A — Disponibilité EE
     if not HAS_PIL or not HAS_EE or not polygon_points or len(polygon_points) < 3:
-        return None, None, None
+        return None, None, None, "Prerequisites missing (Pillow/EE/polygon)"
     if not _init_ee():
-        return None, None, None
+        return None, None, None, "Earth Engine not initialized"
+
+    # Étape A2 — Construction géométrie + fenêtre temporelle
     try:
         roi = ee.Geometry.Polygon(polygon_points).buffer(buffer_m)
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=365)
+        print("🔎 Étape A2 — ROI + temporal window OK.")
+    except Exception as e:
+        print(f"⚠️ Étape A2 — ROI build failed: {type(e).__name__}: {e}")
+        return None, None, None, f"ROI build failed ({type(e).__name__})"
 
+    # Étape B — Accès collection Sentinel-2
+    try:
         coll = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
             .filterBounds(roi) \
             .filterDate(start_date.strftime("%Y-%m-%d"),
                         end_date.strftime("%Y-%m-%d"))
+        coll_size = coll.size().getInfo()
+        print(f"🔎 Étape B — S2 scenes on 12-month window: {coll_size}")
+        if coll_size == 0:
+            return None, None, None, "No Sentinel-2 scene on 12-month window"
+    except Exception as e:
+        print(f"⚠️ Étape B — S2 collection access failed: {type(e).__name__}: {e}")
+        return None, None, None, f"S2 collection access failed ({type(e).__name__})"
 
-        if coll.size().getInfo() == 0:
-            print("⚠️ Aucune scène Sentinel-2 sur la fenêtre 12 mois.")
-            return None, None, None
-
+    # Étape C — Construction du composite
+    try:
         clear = coll.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
-        if clear.size().getInfo() > 0:
+        clear_size = clear.size().getInfo()
+        print(f"🔎 Étape C — scenes <20% cloud: {clear_size}")
+        if clear_size > 0:
             final = clear.median()
             info = (f"Median composite {start_date.strftime('%Y-%m-%d')} → "
                     f"{end_date.strftime('%Y-%m-%d')}, "
-                    f"scenes <20% cloud (global scene metric)")
+                    f"{clear_size} scenes <20% cloud (global scene metric)")
         else:
             best = coll.sort('CLOUDY_PIXEL_PERCENTAGE').first()
             pct = best.get('CLOUDY_PIXEL_PERCENTAGE').getInfo()
@@ -273,22 +300,59 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=800):
             final = best
             info = (f"Best available scene {scene_date}, "
                     f"{pct:.1f}% cloud (global scene metric)")
+        print(f"🔎 Étape C — composite built: {info}")
+    except Exception as e:
+        print(f"⚠️ Étape C — composite build failed: {type(e).__name__}: {e}")
+        return None, None, None, f"Composite build failed ({type(e).__name__})"
 
+    # Étape D — Génération de la vignette
+    try:
         url = final.visualize(bands=['B4', 'B3', 'B2'], min=0, max=3000) \
             .getThumbURL({'region': roi, 'dimensions': image_size, 'format': 'png'})
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
+        print("🔎 Étape D — getThumbURL OK")
+    except Exception as e:
+        print(f"⚠️ Étape D — getThumbURL failed: {type(e).__name__}: {e}")
+        return None, None, None, f"getThumbURL failed ({type(e).__name__})"
 
+    # Étape E — Téléchargement
+    try:
+        resp = requests.get(url, timeout=15)
+        print(f"🔎 Étape E — HTTP {resp.status_code}, {len(resp.content)} bytes")
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"⚠️ Étape E — download failed: {type(e).__name__}: {e}")
+        return None, None, None, f"Download failed ({type(e).__name__})"
+
+    # Étape F — Décodage Pillow (séparé des bounds)
+    try:
         img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
-        bounds = roi.bounds().getInfo()[0]['coordinates'][0]
+        print(f"🔎 Étape F — image decoded: {img.size[0]}x{img.size[1]} px")
+    except Exception as e:
+        print(f"⚠️ Étape F — decode failed: {type(e).__name__}: {e}")
+        return None, None, None, f"Decode failed ({type(e).__name__})"
+
+    # Étape G — Récupération des bounds
+    # getInfo() sur ee.Geometry retourne un GeoJSON dict {type, coordinates},
+    # PAS une liste. Le [0] initial levait KeyError: 0 systématique.
+    try:
+        bounds_info = roi.bounds().getInfo()
+        if not isinstance(bounds_info, dict):
+            raise ValueError("Unexpected Earth Engine bounds response (not a dict)")
+        coordinates = bounds_info.get("coordinates")
+        if not coordinates or not coordinates[0]:
+            raise ValueError("Missing coordinates in Earth Engine bounds")
+        bounds = coordinates[0]
         min_lon = min(p[0] for p in bounds)
         max_lon = max(p[0] for p in bounds)
         min_lat = min(p[1] for p in bounds)
         max_lat = max(p[1] for p in bounds)
-        return img, info, (min_lon, max_lon, min_lat, max_lat)
+        if max_lon <= min_lon or max_lat <= min_lat:
+            raise ValueError("Invalid geographic bounds (degenerate extent)")
+        print(f"🔎 Étape G — bounds OK [{min_lon:.4f},{min_lat:.4f} → {max_lon:.4f},{max_lat:.4f}]")
+        return img, info, (min_lon, max_lon, min_lat, max_lat), None
     except Exception as e:
-        print(f"⚠️ Carte satellite indisponible : {type(e).__name__}")
-        return None, None, None
+        print(f"⚠️ Étape G — bounds retrieval failed: {type(e).__name__}: {e}")
+        return None, None, None, f"Bounds retrieval failed ({type(e).__name__})"
 
 
 def _bbox_overlap(a, b):
@@ -313,11 +377,7 @@ def _nice_scale(max_m):
 def _draw_common(img, polygon_points, bounds, scale_m, places=None):
     """
     Dessine polygone, centroïde, Nord, échelle et villages OSM.
-
-    `scale_m` est une cible cartographique (100 m pour la parcelle,
-    1 000 m pour le contexte). La valeur RÉELLEMENT affichée est arrondie
-    à 1, 2 ou 5 × 10ⁿ et ne dépasse ni `scale_m` ni la longueur
-    disponible dans l'image.
+    `scale_m` est une cible cartographique (100 m parcelle, 1 000 m contexte).
     """
     draw = ImageDraw.Draw(img)
     img_w, img_h = img.size
@@ -328,7 +388,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
         y = (max_lat - lat) / (max_lat - min_lat) * img_h
         return (x, y)
 
-    # --- Villages OSM avec anti-collision ---
     if places:
         try:
             font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
@@ -381,7 +440,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
                 placed_boxes.append(box)
                 break
 
-    # --- Polygone + centroïde ---
     if polygon_points and len(polygon_points) >= 3:
         coords = [project(lon, lat) for lon, lat in polygon_points]
         draw.line(coords + [coords[0]], fill="#CC0000", width=4)
@@ -393,7 +451,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
         except Exception:
             pass
 
-    # --- Flèche Nord ---
     try:
         draw.text((img_w - 30, 10), "N", fill="#FFFFFF", anchor="mm",
                   stroke_width=2, stroke_fill="#000000")
@@ -403,7 +460,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
     except Exception:
         pass
 
-    # --- Échelle graphique : cible scale_m, valeur affichée 1/2/5 × 10ⁿ ---
     try:
         geod = Geod(ellps="WGS84")
         _, _, width_m = geod.inv(min_lon, min_lat, max_lon, min_lat)
@@ -412,7 +468,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
             pixels_per_meter = img_w / width_m
             max_bar_pixels = img_w - 40
             max_distance_m = max_bar_pixels / pixels_per_meter
-            # Plafond effectif : min(cible, longueur disponible).
             cap_m = min(scale_m, max_distance_m) if scale_m else max_distance_m
             nice_m = _nice_scale(cap_m)
             x_scale = nice_m * pixels_per_meter
@@ -426,23 +481,31 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
 
 def generate_parcel_map(polygon_points, path):
     """Carte parcellaire : buffer 200 m, échelle cible 100 m."""
-    img, info, bounds = _fetch_satellite_image(polygon_points, buffer_m=200)
+    img, info, bounds, error = _fetch_satellite_image(polygon_points, buffer_m=200)
     if img is None:
-        return None, None
-    _draw_common(img, polygon_points, bounds, scale_m=100, places=None)
-    img.convert("RGB").save(path, format="PNG")
-    return path, info
+        return None, None, error
+    try:
+        _draw_common(img, polygon_points, bounds, scale_m=100, places=None)
+        img.convert("RGB").save(path, format="PNG")
+    except Exception as e:
+        print(f"⚠️ Étape H (parcel) — save failed: {type(e).__name__}: {e}")
+        return None, None, f"Save failed ({type(e).__name__})"
+    return path, info, None
 
 
 def generate_context_map(polygon_points, lat, lon, path):
     """Carte de contexte : buffer 2 500 m, échelle cible 1 000 m, Overpass 3 000 m."""
-    img, info, bounds = _fetch_satellite_image(polygon_points, buffer_m=2500)
+    img, info, bounds, error = _fetch_satellite_image(polygon_points, buffer_m=2500)
     if img is None:
-        return None, None
+        return None, None, error
     places = fetch_osm_places(lat, lon, radius_m=3000)
-    _draw_common(img, polygon_points, bounds, scale_m=1000, places=places)
-    img.convert("RGB").save(path, format="PNG")
-    return path, info
+    try:
+        _draw_common(img, polygon_points, bounds, scale_m=1000, places=places)
+        img.convert("RGB").save(path, format="PNG")
+    except Exception as e:
+        print(f"⚠️ Étape H (context) — save failed: {type(e).__name__}: {e}")
+        return None, None, f"Save failed ({type(e).__name__})"
+    return path, info, None
 
 
 # ==========================================
@@ -524,10 +587,10 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(Spacer(1, 0.5*cm))
 
         # --- CARTE PARCELLAIRE ---
-        parcel_map, parcel_info = (
-            generate_parcel_map(polygon_points, parcel_path)
-            if polygon_points and len(polygon_points) >= 3 else (None, None)
-        )
+        if polygon_points and len(polygon_points) >= 3:
+            parcel_map, parcel_info, parcel_err = generate_parcel_map(polygon_points, parcel_path)
+        else:
+            parcel_map, parcel_info, parcel_err = None, None, "No polygon"
 
         parcel_inserted = False
         if parcel_map and os.path.exists(parcel_map):
@@ -538,7 +601,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
                 content.append(Image(parcel_map, width=w*scale, height=h*scale))
                 if parcel_info:
                     content.append(Paragraph(
-                        f"<font size='7' color='#888888'>Sentinel-2: {html.escape(parcel_info)}</font>",
+                        f"<font size='7' color='#888888'>Sentinel-2 B4/B3/B2 (10 m native) — {html.escape(parcel_info)}</font>",
                         styles['TDMLegal']))
                 content.append(Paragraph(
                     f"Total Area: {area_str} | Boundary points: "
@@ -546,14 +609,15 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
                     styles['TDMValue']))
                 parcel_inserted = True
             except Exception as e:
-                print(f"⚠️ Erreur insertion carte parcellaire : {type(e).__name__}")
+                print(f"⚠️ Erreur insertion carte parcellaire : {type(e).__name__}: {e}")
 
         if not parcel_inserted:
+            reason = html.escape(parcel_err or "unavailable")
             map_box = Table(
                 [[Paragraph(
                     f"Total Area: {area_str}<br/>Boundary points: "
                     f"{display_point_count if display_point_count is not None else 'Point mode'}"
-                    f"<br/><i>Satellite parcel map unavailable</i>",
+                    f"<br/><i>Satellite parcel map unavailable ({reason})</i>",
                     styles['TDMValue'])]],
                 colWidths=[17*cm], rowHeights=[3*cm])
             map_box.setStyle(TableStyle([
@@ -623,13 +687,24 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         if source == "ee" and dataset_version == EXPECTED_DATASET:
             period_text = "• Dataset Coverage: 2001–2023<br/>"
 
+        # Correction C renforcée : Hansen 30 m seulement si source == "ee"
+        # ET dataset_version correspond au dataset Hansen attendu.
+        hansen_line = (
+            "• Hansen Global Forest Change: 30 m resolution<br/>"
+            if source == "ee" and dataset_version == EXPECTED_DATASET
+            else ""
+        )
+
         method_text = (
             f"<b>Data & Methodology</b><br/>"
             f"• Data Source: {html.escape(source_desc)}<br/>"
             f"• Dataset Version: {html.escape(str(dataset_version))}<br/>"
             f"{period_text}"
             f"• EUDR Reference Date: 31 Dec 2020<br/>"
-            f"• Spatial Resolution: 30m (when applicable)<br/><br/>"
+            f"{hansen_line}"
+            f"• Sentinel-2 RGB (B4/B3/B2): 10 m native resolution<br/>"
+            f"<i>Note: cloud percentage shown on satellite maps is the global scene metric, "
+            f"not a cloud-cover measurement over the parcel.</i><br/><br/>"
             f"<i>Note: This report is a general agricultural territorial screening. "
             f"It does not certify compliance with EUDR, which only applies to specific commodities and operators.</i>"
         )
@@ -709,9 +784,9 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
         if (polygon_points and len(polygon_points) >= 3
                 and lat is not None and lon is not None):
-            context_map, context_info = generate_context_map(polygon_points, lat, lon, context_path)
+            context_map, context_info, context_err = generate_context_map(polygon_points, lat, lon, context_path)
         else:
-            context_map, context_info = None, None
+            context_map, context_info, context_err = None, None, "No polygon or coordinates"
 
         if context_map and os.path.exists(context_map):
             try:
@@ -721,17 +796,17 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
                 content.append(Image(context_map, width=w*scale, height=h*scale))
                 if context_info:
                     content.append(Paragraph(
-                        f"<font size='7' color='#888888'>Sentinel-2: {html.escape(context_info)}</font>",
+                        f"<font size='7' color='#888888'>Sentinel-2 B4/B3/B2 (10 m native) — {html.escape(context_info)}</font>",
                         styles['TDMLegal']))
             except Exception as e:
-                print(f"⚠️ Erreur insertion carte contexte : {type(e).__name__}")
+                print(f"⚠️ Erreur insertion carte contexte : {type(e).__name__}: {e}")
                 content.append(Paragraph(
                     "<i>Territorial context map unavailable (rendering error).</i>",
                     styles['TDMValue']))
         else:
+            reason = html.escape(context_err or "unavailable")
             content.append(Paragraph(
-                "<i>Territorial context map unavailable "
-                "(Sentinel-2 imagery could not be retrieved or Earth Engine is not configured).</i>",
+                f"<i>Territorial context map unavailable ({reason}).</i>",
                 styles['TDMValue']))
 
         terr_context = (
