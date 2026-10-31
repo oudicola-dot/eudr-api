@@ -1,4 +1,4 @@
-# v2.7 - Déplacement du diagnostic brut avant le traitement des clés
+# v2.8 - Diagnostic EARLY EXIT avec indentation corrigée
 import uuid
 import sqlite3
 import os
@@ -116,13 +116,13 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
-                treecover_val = treecover.reduceRegion(
+        treecover_val = treecover.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=geometry,
             scale=30,
             maxPixels=1e9
         ).get('treecover2000').getInfo()
-
+        
         tree_cover = int(round(treecover_val)) if treecover_val is not None else -1
 
         valid_pixels = lossyear.reduceRegion(
