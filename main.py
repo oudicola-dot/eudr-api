@@ -150,10 +150,18 @@ async def eudr_check(request: Request, payload: dict):
     audit_id = audit["audit_id"]
     signature = audit["signature"]
 
+    # ==========================================
+    # MODIFICATION 1 : On récupère le preset
+    # ==========================================
+    # On lit le choix de l'utilisateur (par défaut "standard" s'il n'y a rien)
+    preset_choice = payload.get("image_preset", "standard")
+
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     audit["partial_checksum"] = sha
     audit["verify_url"] = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
-    audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}?signature={signature}"
+    
+    # On ajoute le preset dans l'URL de téléchargement
+    audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}?signature={signature}&preset={preset_choice}"
     return audit
 
 @app.get("/eudr/verify/{audit_id}")
@@ -223,9 +231,12 @@ def cleanup_file(path: str):
     except Exception:
         pass
 
+# ==========================================
+# MODIFICATION 2 : Acceptation du preset ici
+# ==========================================
 @app.get("/download/{audit_id}")
 @limiter.limit("10/minute")
-async def download_pdf(request: Request, background_tasks: BackgroundTasks, audit_id: str, signature: str):
+async def download_pdf(request: Request, background_tasks: BackgroundTasks, audit_id: str, signature: str, preset: str = "standard"):
     if not verify_signature(audit_id, signature):
         raise HTTPException(status_code=403, detail="Invalid signature")
     
@@ -239,7 +250,8 @@ async def download_pdf(request: Request, background_tasks: BackgroundTasks, audi
             audit_id=audit["audit_id"], name=audit["farm_name"], lat=audit["latitude"], lon=audit["longitude"],
             risk_score=audit["risk_score"], risk_level=audit["risk_level"], eudr_status=audit["eudr_status"],
             tree_cover=audit.get("tree_cover", -1), loss_year=audit.get("loss_year", -1),
-            source=audit.get("source", "unknown"), polygon_points=audit.get("polygon_points"), dataset_version=audit.get("dataset_version", "Unknown")
+            source=audit.get("source", "unknown"), polygon_points=audit.get("polygon_points"), dataset_version=audit.get("dataset_version", "Unknown"),
+            image_preset=preset  # <--- MODIFICATION ICI : On transmet le preset au PDF
         )
         
         background_tasks.add_task(cleanup_file, file_path)
