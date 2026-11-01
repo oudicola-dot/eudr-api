@@ -108,7 +108,7 @@ def init_db():
         "estimated_coverage_pct": "REAL",
         "insufficient_reason": "TEXT",
         "treecover_reason": "TEXT",
-        "build_version": "TEXT"  # <-- AJOUT 1
+        "build_version": "TEXT"
     }
     
     for col, col_type in new_columns.items():
@@ -327,10 +327,13 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "insufficient_reason": "INVALID_LOSS_PERCENTAGE", "treecover_reason": result.get("treecover_reason")
             }
 
+        # CORRECTIF : Seuils exacts demandés par les tests
         if loss_pct > 5.0:
             risk_score, risk_level, status = 100, "HIGH", "POTENTIAL LOSS SIGNAL"
-        elif loss_pct > 1.0:
+        elif loss_pct >= 1.0:
             risk_score, risk_level, status = 50, "MEDIUM", "POTENTIAL LOSS SIGNAL"
+        elif loss_pct > 0.0:
+            risk_score, risk_level, status = 0, "LOW", "BELOW TDM SCREENING THRESHOLD"
         else:
             risk_score, risk_level, status = 0, "LOW", "NO POST-2020 LOSS DETECTED"
             
@@ -383,7 +386,7 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
         "estimated_coverage_pct": result.get("estimated_coverage_pct"),
         "insufficient_reason": result.get("insufficient_reason"),
         "treecover_reason": result.get("treecover_reason"),
-        "build_version": result.get("_build", BUILD_VERSION) # <-- AJOUT 2
+        "build_version": result.get("_build", BUILD_VERSION)
     }
 
     conn = get_conn()
@@ -399,7 +402,7 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
         audit["audit_id"], audit["farm_name"], audit["latitude"], audit["longitude"], audit["risk_score"], audit["risk_level"], audit["eudr_compliant"],
         audit["tree_cover"], audit["loss_year"], audit["source"], audit["polygon_points"], audit["status"], audit["issuer"], audit["signature"], audit["created_at"],
         audit["dataset_version"], audit["valid_pixels"], audit["nominal_pixels_estimate"], audit["estimated_coverage_pct"], audit["insufficient_reason"], audit["treecover_reason"],
-        audit["build_version"] # <-- AJOUT 3
+        audit["build_version"]
     ))
     conn.commit()
     conn.close()
@@ -432,5 +435,5 @@ def get_audit(audit_id: str):
         "estimated_coverage_pct": row[18],
         "insufficient_reason": row[19],
         "treecover_reason": row[20],
-        "build_version": row[21] # <-- AJOUT 4
+        "build_version": row[21]
     }
