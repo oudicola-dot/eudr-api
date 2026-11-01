@@ -12,6 +12,9 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
     def test_histogram_empty(self, mock_ee):
+        # On mock la surface (area) pour éviter le crash
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
+        # On mock les 3 appels de getInfo (treecover, valid_pixels, loss_hist)
         mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {}]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
@@ -19,6 +22,7 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
     def test_histogram_mismatch(self, mock_ee):
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
         mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 500}]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
@@ -26,6 +30,7 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
     def test_histogram_nan(self, mock_ee):
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
         mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 1000, '22': float('nan')}]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
@@ -33,6 +38,7 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
     def test_histogram_invalid_year(self, mock_ee):
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
         mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 900, '99': 100}]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
@@ -120,7 +126,8 @@ class TestEUDRLogic(unittest.TestCase):
                     "nominal_pixels_estimate": 100,
                     "estimated_coverage_pct": 100.0,
                     "insufficient_reason": None,
-                    "treecover_reason": None
+                    "treecover_reason": None,
+                    "build_version": "TEST_BUILD"
                 }
                 audit = eudr.create_audit("New Farm", 4.5, -74.2)
                 read_audit = eudr.get_audit(audit["audit_id"])
