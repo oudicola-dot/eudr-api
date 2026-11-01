@@ -46,7 +46,18 @@ class TestEUDRLogic(unittest.TestCase):
         invalid_values = [None, float('nan'), float('inf'), -5.0]
         for val in invalid_values:
             with self.subTest(val=val):
-                mock_ee.return_value = {"tree_cover": 50, "loss_percentage": val, "last_loss_year": 0, "source": "ee", "insufficient_data": False}
+                mock_ee.return_value = {
+                    "tree_cover_mean_ee": 50, 
+                    "loss_percentage": val, 
+                    "last_loss_year": 0, 
+                    "source": "ee", 
+                    "insufficient_data": False,
+                    "estimated_coverage_pct": 100.0,
+                    "valid_pixels": 100,
+                    "nominal_pixels_estimate": 100,
+                    "insufficient_reason": None,
+                    "treecover_reason": None
+                }
                 res = eudr.compute_risk(4.5, -74.2)
                 self.assertEqual(res["eudr_status"], "INSUFFICIENT DATA")
 
@@ -62,7 +73,18 @@ class TestEUDRLogic(unittest.TestCase):
         ]
         for loss_pct, expected_status, expected_level in test_cases:
             with self.subTest(loss_pct=loss_pct):
-                mock_ee.return_value = {"tree_cover": 50, "loss_percentage": loss_pct, "last_loss_year": 2022, "source": "ee", "insufficient_data": False}
+                mock_ee.return_value = {
+                    "tree_cover_mean_ee": 50, 
+                    "loss_percentage": loss_pct, 
+                    "last_loss_year": 2022, 
+                    "source": "ee", 
+                    "insufficient_data": False,
+                    "estimated_coverage_pct": 100.0,
+                    "valid_pixels": 100,
+                    "nominal_pixels_estimate": 100,
+                    "insufficient_reason": None,
+                    "treecover_reason": None
+                }
                 res = eudr.compute_risk(4.5, -74.2)
                 self.assertEqual(res["eudr_status"], expected_status)
                 self.assertEqual(res["risk_level"], expected_level)
@@ -90,8 +112,18 @@ class TestEUDRLogic(unittest.TestCase):
             eudr.init_db()
             with patch('eudr.compute_risk') as mock_risk:
                 mock_risk.return_value = {
-                    "risk_score": 50, "risk_level": "MEDIUM", "eudr_status": "POTENTIAL LOSS SIGNAL",
-                    "tree_cover": 80, "loss_year": 2022, "source": "ee", "dataset_version": "TEST_V1"
+                    "risk_score": 50, 
+                    "risk_level": "MEDIUM", 
+                    "eudr_status": "POTENTIAL LOSS SIGNAL",
+                    "tree_cover": 80, 
+                    "loss_year": 2022, 
+                    "source": "ee", 
+                    "dataset_version": "TEST_V1",
+                    "valid_pixels": 100,
+                    "nominal_pixels_estimate": 100,
+                    "estimated_coverage_pct": 100.0,
+                    "insufficient_reason": None,
+                    "treecover_reason": None
                 }
                 audit = eudr.create_audit("New Farm", 4.5, -74.2)
                 read_audit = eudr.get_audit(audit["audit_id"])
