@@ -19,7 +19,6 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
     def test_histogram_mismatch(self, mock_ee):
-        # Somme de l'histogramme (500) != valid_pixels (1000)
         mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 500}]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
@@ -42,7 +41,6 @@ class TestEUDRLogic(unittest.TestCase):
 
     @patch('eudr.compute_risk_ee')
     def test_orchestrator_invalid_loss_pct(self, mock_ee):
-        # Test des valeurs invalides : None, NaN, Infinity, -5
         invalid_values = [None, float('nan'), float('inf'), -5.0]
         for val in invalid_values:
             with self.subTest(val=val):
@@ -63,7 +61,6 @@ class TestEUDRLogic(unittest.TestCase):
 
     @patch('eudr.compute_risk_ee')
     def test_orchestrator_thresholds(self, mock_ee):
-        # Test des 5 seuils critiques
         test_cases = [
             (0.0, "NO POST-2020 LOSS DETECTED", "LOW"),
             (0.5, "BELOW TDM SCREENING THRESHOLD", "LOW"),
