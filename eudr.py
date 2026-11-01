@@ -16,7 +16,7 @@ from pyproj import Geod
 
 DB_PATH = "eudr.db"
 GFW_API_KEY = os.getenv("GFW_API_KEY")
-DATASET_VERSION = "Hansen Global Forest Change 2023 v1.11 (2000-2023)"
+DATASET_VERSION = "Hansen Global Forest Change 2025 v1.13 (2000-2025)"
 TDM_SCREENING_THRESHOLD_PCT = 10.0  # Contrôle qualité interne expérimental (non-réglementaire)
 
 # ========== BUILD IDENTIFIER ==========
@@ -154,7 +154,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             point = ee.Geometry.Point(lon, lat)
             geometry = point.buffer(30)
 
-        dataset = ee.Image('UMD/hansen/global_forest_change_2023_v1_11')
+        dataset = ee.Image('UMD/hansen/global_forest_change_2025_v1_13')
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
 
@@ -234,7 +234,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                             raise ValueError("NULL_BUCKET")
                         
                         year_int = int(year_str)
-                        if year_int < 0 or year_int > 23:
+                        if year_int < 0 or year_int > 25:
                             raise ValueError("INVALID_YEAR")
                         
                         histogram_pixels += count_float
