@@ -1,7 +1,3 @@
-# v2.7 - Déplacement du diagnostic brut avant le traitement des clés
-# + Livrable 0.1 - Marqueur de build
-# + Étape 1a - Métriques de couverture, raisons d'insuffisance séparées, persistance et propagation
-# + Étape 1b - Activation du seuil de couverture QC TDM (10%) et précision des diagnostics
 import uuid
 import sqlite3
 import os
@@ -111,7 +107,8 @@ def init_db():
         "nominal_pixels_estimate": "INTEGER",
         "estimated_coverage_pct": "REAL",
         "insufficient_reason": "TEXT",
-        "treecover_reason": "TEXT"
+        "treecover_reason": "TEXT",
+        "build_version": "TEXT"  # <-- AJOUT 1
     }
     
     for col, col_type in new_columns.items():
@@ -154,6 +151,14 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             point = ee.Geometry.Point(lon, lat)
             geometry = point.buffer(30)
 
+        # CORRECTIF : Calcul de surface propre pour le mode "Point Seul"
+        try:
+            area_sq_m = geometry.area(maxError=1).getInfo()
+            area_ha = area_sq_m / 10000.0
+        except Exception as e:
+            print(f"❌ Erreur calcul surface EE : {e}")
+            area_ha = None
+
         dataset = ee.Image('UMD/hansen/global_forest_change_2025_v1_13')
         treecover = dataset.select('treecover2000')
         lossyear = dataset.select('lossyear')
@@ -175,7 +180,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
         ).get('lossyear').getInfo()
 
-        # CORRECTION : Distinction fine des erreurs de comptage
         if not isinstance(valid_pixels_raw, (int, float)) or not math.isfinite(valid_pixels_raw) or valid_pixels_raw <= 0:
             loss_insufficient = True
             valid_pixels = None
@@ -191,7 +195,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 loss_insufficient = False
                 pixel_error_reason = None
 
-        area_ha = get_polygon_area_ha(polygon) if polygon else None
         nominal_pixels_estimate = None
         estimated_coverage_pct = None
         
@@ -257,13 +260,12 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                     hist_reason = str(e) if str(e) in ["NULL_BUCKET", "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE", "INVALID_YEAR", "INVALID_COUNT"] else "INVALID_DATA"
                     print(f"⚠️ EE: Erreur histogramme : {hist_reason}")
 
-        # Détermination de la raison finale
         is_loss_insufficient = loss_insufficient or hist_insufficient
         
         if hist_insufficient:
-            insufficient_reason = hist_reason # Priorité 1 : Erreur Earth Engine
+            insufficient_reason = hist_reason
         elif loss_insufficient:
-            insufficient_reason = pixel_error_reason # Priorité 2 : Erreur de comptage
+            insufficient_reason = pixel_error_reason
         else:
             insufficient_reason = None
 
@@ -287,7 +289,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
 def compute_risk(lat: float, lon: float, polygon=None):
     result = compute_risk_ee(lat, lon, polygon)
     if result:
-        # PRIORITÉ 1 : Erreur technique (histogramme ou pertes)
         if result.get("insufficient_data"):
             return {
                 "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", 
@@ -299,7 +300,6 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "insufficient_reason": result["insufficient_reason"], "treecover_reason": result["treecover_reason"]
             }
 
-        # PRIORITÉ 2 : Seuil de couverture (Étape 1b)
         coverage = result.get("estimated_coverage_pct")
         if coverage is None or coverage < TDM_SCREENING_THRESHOLD_PCT:
             return {
@@ -313,8 +313,20 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "treecover_reason": result["treecover_reason"]
             }
 
-        # PRIORITÉ 3 : Succès, on applique les seuils métiers
         loss_pct = result["loss_percentage"]
+        
+        # CORRECTIF : On protège le calcul des seuils contre les valeurs invalides (None, NaN, Inf, <0)
+        if loss_pct is None or not math.isfinite(loss_pct) or loss_pct < 0:
+            return {
+                "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA", 
+                "tree_cover": result.get("tree_cover_mean_ee", -1), "loss_year": -1, "source": result.get("source", "ee"), 
+                "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION,
+                "tree_cover_mean_ee": result.get("tree_cover_mean_ee", -1), "tree_cover_gfw_2000": None,
+                "valid_pixels": result.get("valid_pixels"), "nominal_pixels_estimate": result.get("nominal_pixels_estimate"), 
+                "estimated_coverage_pct": result.get("estimated_coverage_pct"), 
+                "insufficient_reason": "INVALID_LOSS_PERCENTAGE", "treecover_reason": result.get("treecover_reason")
+            }
+
         if loss_pct > 5.0:
             risk_score, risk_level, status = 100, "HIGH", "POTENTIAL LOSS SIGNAL"
         elif loss_pct > 1.0:
@@ -370,7 +382,8 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
         "nominal_pixels_estimate": result.get("nominal_pixels_estimate"),
         "estimated_coverage_pct": result.get("estimated_coverage_pct"),
         "insufficient_reason": result.get("insufficient_reason"),
-        "treecover_reason": result.get("treecover_reason")
+        "treecover_reason": result.get("treecover_reason"),
+        "build_version": result.get("_build", BUILD_VERSION) # <-- AJOUT 2
     }
 
     conn = get_conn()
@@ -379,12 +392,14 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
         INSERT INTO audits (
             audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
             tree_cover, loss_year, source, polygon_points, status, issuer, signature, created_at, dataset_version,
-            valid_pixels, nominal_pixels_estimate, estimated_coverage_pct, insufficient_reason, treecover_reason
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            valid_pixels, nominal_pixels_estimate, estimated_coverage_pct, insufficient_reason, treecover_reason,
+            build_version
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         audit["audit_id"], audit["farm_name"], audit["latitude"], audit["longitude"], audit["risk_score"], audit["risk_level"], audit["eudr_compliant"],
         audit["tree_cover"], audit["loss_year"], audit["source"], audit["polygon_points"], audit["status"], audit["issuer"], audit["signature"], audit["created_at"],
-        audit["dataset_version"], audit["valid_pixels"], audit["nominal_pixels_estimate"], audit["estimated_coverage_pct"], audit["insufficient_reason"], audit["treecover_reason"]
+        audit["dataset_version"], audit["valid_pixels"], audit["nominal_pixels_estimate"], audit["estimated_coverage_pct"], audit["insufficient_reason"], audit["treecover_reason"],
+        audit["build_version"] # <-- AJOUT 3
     ))
     conn.commit()
     conn.close()
@@ -397,7 +412,8 @@ def get_audit(audit_id: str):
         SELECT 
             audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
             tree_cover, loss_year, source, polygon_points, status, issuer, signature, created_at,
-            dataset_version, valid_pixels, nominal_pixels_estimate, estimated_coverage_pct, insufficient_reason, treecover_reason
+            dataset_version, valid_pixels, nominal_pixels_estimate, estimated_coverage_pct, insufficient_reason, treecover_reason,
+            build_version
         FROM audits WHERE audit_id=?
     """, (audit_id,))
     row = c.fetchone()
@@ -415,5 +431,6 @@ def get_audit(audit_id: str):
         "nominal_pixels_estimate": row[17],
         "estimated_coverage_pct": row[18],
         "insufficient_reason": row[19],
-        "treecover_reason": row[20]
+        "treecover_reason": row[20],
+        "build_version": row[21] # <-- AJOUT 4
     }
