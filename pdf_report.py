@@ -70,24 +70,24 @@ _EE_CONFIRMED = False
 
 
 # ==========================================
-# PRESETS DE CADRAGE SATELLITE
+# PRESETS DE CADRAGE SATELLITE (CORRIGÉS)
 # ==========================================
 IMAGE_PRESETS = {
     "standard": {
-        "parcel_buffer_m": 250,
-        "parcel_size": (1400, 850),
+        "parcel_buffer_m": 300,   # Un peu plus de contexte
+        "parcel_size": (900, 550), # On demande 900x550 au lieu de 1400x850 (nettement plus net)
         "context_buffer_m": 2500,
         "context_size": (1800, 1100),
     },
     "zoom": {
-        "parcel_buffer_m": 100,
-        "parcel_size": (1400, 850),
+        "parcel_buffer_m": 150,   # Vue rapprochée
+        "parcel_size": (800, 500), 
         "context_buffer_m": 1500,
         "context_size": (1800, 1100),
     },
     "wide": {
-        "parcel_buffer_m": 500,
-        "parcel_size": (1400, 850),
+        "parcel_buffer_m": 600,   # Vue large
+        "parcel_size": (1000, 600), 
         "context_buffer_m": 4000,
         "context_size": (1800, 1100),
     },
