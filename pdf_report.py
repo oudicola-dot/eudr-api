@@ -642,7 +642,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
             poly_table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey), ("BACKGROUND", (0, 0), (-1, 0), TDM_GRAY)]))
             content.append(poly_table)
 
-        content.append(Spacer(1, 0.5 * cm))
+        content.append(PageBreak())
         content.append(Paragraph(t("territorial_context"), styles["TDMSection"]))
         content.append(Spacer(1, 0.3 * cm))
 
