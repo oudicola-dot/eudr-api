@@ -149,7 +149,7 @@ def format_loss_year(val):
     return "N/A"
 
 def get_loss_display(status, loss_year):
-    if status in ("INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE", "UNKNOWN STATUS"):
+    if status in ("INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE", "UNKNOWN STATUS", "SCREENING INCONCLUSIVE"):
         return "N/A"
     return format_loss_year(loss_year)
 
@@ -242,7 +242,6 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         poly = Polygon(ring)
         min_lon, min_lat, max_lon, max_lat = poly.bounds
         
-        # CORRECTIF : Utilisation du buffer_m pour calculer les limites géographiques
         center_lat = (min_lat + max_lat) / 2.0
         m_per_deg_lon = 111320.0 * math.cos(math.radians(center_lat))
         m_per_deg_lat = 110540.0
@@ -258,7 +257,6 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         width_m = max((max_lon - min_lon) * m_per_deg_lon, 1.0)
         height_m = max((max_lat - min_lat) * m_per_deg_lat, 1.0)
 
-        # BBOX minimum de 500m pour Esri
         min_size_m = 500.0
         center_lon = (min_lon + max_lon) / 2.0
         center_lat = (min_lat + max_lat) / 2.0
@@ -457,7 +455,6 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
 # GÉNÉRATION PDF
 # ==========================================
 def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown", image_preset=DEFAULT_PRESET, **kwargs):
-    # CORRECTIF : On respecte le choix de l'utilisateur, plus d'auto_preset
     preset = resolve_preset(image_preset)
     temp_id = uuid.uuid4().hex
     file_path = f"/tmp/{audit_id}_{temp_id}.pdf"
@@ -501,7 +498,18 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         safe_name, safe_id = html.escape(str(name)), html.escape(str(audit_id))
 
         valid_statuses = ["NO POST-2020 LOSS DETECTED", "BELOW TDM SCREENING THRESHOLD", "POTENTIAL LOSS SIGNAL", "INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE"]
-        safe_status = html.escape(str(eudr_status)) if eudr_status in valid_statuses else "UNKNOWN STATUS"
+        
+        raw_status = str(eudr_status or "UNKNOWN").strip()
+        display_status = (
+            "SCREENING INCONCLUSIVE"
+            if raw_status == "INSUFFICIENT DATA"
+            else raw_status
+        )
+        safe_status = (
+            html.escape(display_status)
+            if raw_status in valid_statuses
+            else "UNKNOWN STATUS"
+        )
 
         qrcode.make(verify_url).save(qr_path)
         qr_img = Image(qr_path, width=60, height=60)
@@ -558,7 +566,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
         content.append(Spacer(1, 0.5 * cm))
 
-        status_color = "#1E3A32" if "NO POST-2020" in safe_status else "#CC0000" if "POTENTIAL" in safe_status else "#D97706" if "INSUFFICIENT DATA" in safe_status else "#F59E0B"
+        status_color = "#1E3A32" if "NO POST-2020" in safe_status else "#CC0000" if "POTENTIAL" in safe_status else "#D97706" if "INSUFFICIENT DATA" in safe_status or "SCREENING INCONCLUSIVE" in safe_status else "#F59E0B"
         tc_display, score_display = format_val(tree_cover, "%", 0, 100), format_val(risk_score, "", 0, 100)
         loss_display = get_loss_display(safe_status, loss_year)
 
@@ -619,18 +627,17 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
             if insufficient_reason:
                 content.append(Paragraph(f"<b>Insufficiency Reason:</b> {html.escape(str(insufficient_reason))}", styles["TDMValue"]))
+            
+            if raw_status == "INSUFFICIENT DATA":
+                content.append(Spacer(1, 0.2 * cm))
+                content.append(Paragraph(
+                    "<b>SCREENING INCONCLUSIVE — Limited Valid Observations</b><br/>"
+                    "The available geospatial observations were insufficient to establish a reliable forest-loss assessment for this parcel.<br/><br/>"
+                    "This result does not indicate zero forest loss, nor does it establish EUDR compliance. "
+                    "<b>Territorial assessment — Additional verification required.</b>",
+                    styles["TDMLegal"]
+                ))
                 
-                if insufficient_reason == "NO_VALID_LOSS_PIXELS":
-                    content.append(Spacer(1, 0.2 * cm))
-                    content.append(Paragraph(
-                        "<b>INSUFFICIENT DATA — No valid Hansen observations</b><br/>"
-                        "The Hansen Global Forest Change dataset did not provide valid lossyear observations for the analyzed geometry. "
-                        "Consequently, no reliable post-2020 forest-loss percentage could be calculated.<br/><br/>"
-                        "This result must not be interpreted as evidence of zero forest loss or as confirmation of EUDR compliance. "
-                        "Further verification using complementary data sources is required.",
-                        styles["TDMLegal"]
-                    ))
-
                 if insufficient_reason == "COVERAGE_BELOW_5_PCT":
                     content.append(Spacer(1, 0.2 * cm))
                     content.append(Paragraph(
