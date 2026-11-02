@@ -255,14 +255,29 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         width_m = max((max_lon - min_lon) * m_per_deg_lon, 1.0)
         height_m = max((max_lat - min_lat) * m_per_deg_lat, 1.0)
 
+        # PATCH CHATGPT : BBOX minimum de 500m pour Esri (calculé en mètres)
+        min_size_m = 500.0
+        center_lon = (min_lon + max_lon) / 2.0
+        center_lat = (min_lat + max_lat) / 2.0
+
+        if width_m < min_size_m:
+            delta_lon = (min_size_m / 2.0) / m_per_deg_lon
+            min_lon = center_lon - delta_lon
+            max_lon = center_lon + delta_lon
+            width_m = min_size_m
+
+        if height_m < min_size_m:
+            delta_lat = (min_size_m / 2.0) / m_per_deg_lat
+            min_lat = center_lat - delta_lat
+            max_lat = center_lat + delta_lat
+            height_m = min_size_m
+
         if (width_m / height_m) < target_aspect:
             new_width_deg = (height_m * target_aspect) / m_per_deg_lon
-            center_lon = (min_lon + max_lon) / 2.0
             min_lon = center_lon - new_width_deg / 2.0
             max_lon = center_lon + new_width_deg / 2.0
         else:
             new_height_deg = (width_m / target_aspect) / m_per_deg_lat
-            center_lat = (min_lat + max_lat) / 2.0
             min_lat = center_lat - new_height_deg / 2.0
             max_lat = center_lat + new_height_deg / 2.0
 
@@ -605,7 +620,30 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
             content.append(metrics_table)
             content.append(Spacer(1, 0.3 * cm))
 
-            if insufficient_reason: content.append(Paragraph(f"<b>Insufficiency Reason:</b> {html.escape(str(insufficient_reason))}", styles["TDMValue"]))
+            if insufficient_reason:
+                content.append(Paragraph(f"<b>Insufficiency Reason:</b> {html.escape(str(insufficient_reason))}", styles["TDMValue"]))
+                
+                # PATCH CHATGPT : Texte neutre pour NO_VALID_LOSS_PIXELS
+                if insufficient_reason == "NO_VALID_LOSS_PIXELS":
+                    content.append(Spacer(1, 0.2 * cm))
+                    content.append(Paragraph(
+                        "<b>INSUFFICIENT DATA — No valid Hansen observations</b><br/>"
+                        "The Hansen Global Forest Change dataset did not provide valid lossyear observations for the analyzed geometry. "
+                        "Consequently, no reliable post-2020 forest-loss percentage could be calculated.<br/><br/>"
+                        "This result must not be interpreted as evidence of zero forest loss or as confirmation of EUDR compliance. "
+                        "Further verification using complementary data sources is required.",
+                        styles["TDMLegal"]
+                    ))
+
+                # PATCH CHATGPT : Clarté sur la couverture vs le taux de perte
+                if insufficient_reason == "COVERAGE_BELOW_5_PCT":
+                    content.append(Spacer(1, 0.2 * cm))
+                    content.append(Paragraph(
+                        "<i>Note: The 'Estimated Coverage' indicates the proportion of the parcel area for which valid Hansen observations exist. "
+                        "It is not a measure of the forest-loss rate. The 5% threshold is an internal TDM data-quality control, not an EUDR regulatory threshold.</i>",
+                        styles["TDMLegal"]
+                    ))
+
             if treecover_reason: content.append(Paragraph(f"<b>Treecover Availability:</b> {html.escape(str(treecover_reason))}", styles["TDMValue"]))
             content.append(Spacer(1, 0.5 * cm))
 
