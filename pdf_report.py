@@ -153,6 +153,18 @@ def get_loss_display(status, loss_year):
         return "N/A"
     return format_loss_year(loss_year)
 
+# CORRECTIF : Ajout de la fonction pour créer un carré virtuel
+def _make_box(lat, lon, size_m=100):
+    """Crée un petit carré autour d'un point pour générer une carte."""
+    delta_deg = (size_m / 2) / 111320.0
+    return [
+        [lon - delta_deg, lat - delta_deg],
+        [lon + delta_deg, lat - delta_deg],
+        [lon + delta_deg, lat + delta_deg],
+        [lon - delta_deg, lat + delta_deg],
+        [lon - delta_deg, lat - delta_deg]
+    ]
+
 def calculate_geometry(polygon_points):
     if not polygon_points or len(polygon_points) < 3:
         return "N/A", "N/A"
@@ -229,17 +241,14 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         ring = [[float(p[0]), float(p[1])] for p in polygon_points]
         if ring[0] != ring[-1]: ring.append(ring[0])
 
-        # Calcul des bounds via Shapely (plus simple et plus rapide que EE)
         poly = Polygon(ring)
         min_lon, min_lat, max_lon, max_lat = poly.bounds
         
-        # On ajoute un petit buffer visuel autour
         delta_lon = (max_lon - min_lon) * 0.2
         delta_lat = (max_lat - min_lat) * 0.2
         min_lon -= delta_lon; max_lon += delta_lon
         min_lat -= delta_lat; max_lat += delta_lat
 
-        # On ajuste le ratio pour éviter l'étirement
         target_aspect = image_size[0] / image_size[1]
         lat_rad = math.radians((min_lat + max_lat) / 2.0)
         m_per_deg_lon = 111320.0 * math.cos(lat_rad)
@@ -262,9 +271,10 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
     except Exception as e:
         return None, None, None, f"ROI build failed ({type(e).__name__})"
 
-    # --- APPEL À L'API ESRI ---
     try:
-        # On demande l'image directement à Esri en PNG
+        if width_m < 200:
+            image_size = (600, 400) 
+
         esri_url = (
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
             f"?bbox={min_lon},{min_lat},{max_lon},{max_lat}"
@@ -278,12 +288,42 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         
         img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
         info = "Esri World Imagery (High Resolution)"
-        
-        return (img, info, (min_lon, max_lon, min_lat, max_lat), None)
+        return (img, info, (min_lon, max_lat, min_lat, max_lat), None)
         
     except Exception as e:
-        print(f"❌ Erreur téléchargement Esri : {e}")
-        return (None, None, None, "Esri download failed")
+        print(f"⚠️ Esri a échoué, on bascule sur Sentinel-2 : {e}")
+        
+        if not _init_ee():
+            return (None, None, None, "Esri failed and EE not initialized")
+
+        try:
+            roi = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+            end_date = datetime.utcnow()
+            start_date = end_date - timedelta(days=365)
+            
+            coll = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(roi).filterDate(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+            clear = coll.filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+            
+            if clear.size().getInfo() > 0:
+                final = clear.median()
+                info = f"Sentinel-2 Composite (Fallback)"
+            else:
+                final = coll.sort("CLOUDY_PIXEL_PERCENTAGE").first()
+                info = "Sentinel-2 Best Available (Fallback)"
+                
+            url = final.visualize(bands=["B4", "B3", "B2"], min=0, max=3000, gamma=1.4).getThumbURL({
+                "region": roi, "dimensions": f"{image_size[0]}x{image_size[1]}", "format": "png"
+            })
+            
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
+            
+            return (img, info, (min_lon, max_lat, min_lat, max_lat), None)
+            
+        except Exception as e2:
+            print(f"❌ Fallback Sentinel-2 échoué : {e2}")
+            return (None, None, None, "All imagery sources failed")
 
 # ==========================================
 # DESSIN
@@ -463,11 +503,17 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(id_table)
         content.append(Spacer(1, 0.5 * cm))
 
-        # CARTE PARCELLAIRE
+        # CORRECTIF : GESTION DU POINT SEUL POUR LA CARTE PARCELLAIRE
+        map_poly = None
         if polygon_points and len(polygon_points) >= 3:
-            parcel_map, parcel_info, parcel_err = generate_parcel_map(polygon_points, parcel_path, buffer_m=preset["parcel_buffer_m"], image_size=preset["parcel_size"])
+            map_poly = polygon_points
+        elif lat is not None and lon is not None:
+            map_poly = _make_box(lat, lon, size_m=150)
+            
+        if map_poly:
+            parcel_map, parcel_info, parcel_err = generate_parcel_map(map_poly, parcel_path, buffer_m=preset["parcel_buffer_m"], image_size=preset["parcel_size"])
         else:
-            parcel_map, parcel_info, parcel_err = None, None, "No polygon"
+            parcel_map, parcel_info, parcel_err = None, None, "No coordinates"
 
         parcel_inserted = False
         if (parcel_map and os.path.exists(parcel_map)):
@@ -572,10 +618,11 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(Paragraph("TERRITORIAL CONTEXT", styles["TDMSection"]))
         content.append(Spacer(1, 0.3 * cm))
 
-        if polygon_points and len(polygon_points) >= 3 and lat is not None and lon is not None:
-            context_map, context_info, context_err = generate_context_map(polygon_points, lat, lon, context_path, buffer_m=preset["context_buffer_m"], image_size=preset["context_size"])
+        # CORRECTIF : GESTION DU POINT SEUL POUR LA CARTE DE CONTEXTE
+        if map_poly and lat is not None and lon is not None:
+            context_map, context_info, context_err = generate_context_map(map_poly, lat, lon, context_path, buffer_m=preset["context_buffer_m"], image_size=preset["context_size"])
         else:
-            context_map, context_info, context_err = None, None, "No polygon or coordinates"
+            context_map, context_info, context_err = None, None, "No coordinates"
 
         if context_map and os.path.exists(context_map):
             try:
