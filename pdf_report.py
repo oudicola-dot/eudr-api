@@ -67,26 +67,26 @@ TDM_GRAY = colors.HexColor("#F5F5F5")
 _EE_CONFIRMED = False
 
 # ==========================================
-# PRESETS DE CADRAGE SATELLITE (Modifié)
+# PRESETS DE CADRAGE SATELLITE
 # ==========================================
 IMAGE_PRESETS = {
     "standard": {
         "parcel_buffer_m": 300,
         "parcel_size": (1200, 800), 
         "context_buffer_m": 2500,
-        "context_size": (1200, 800), # <-- MODIFIÉ
+        "context_size": (1200, 800),
     },
     "zoom": {
         "parcel_buffer_m": 150,   
         "parcel_size": (1000, 700), 
         "context_buffer_m": 1500,
-        "context_size": (1200, 800), # <-- MODIFIÉ
+        "context_size": (1200, 800),
     },
     "wide": {
         "parcel_buffer_m": 600,   
         "parcel_size": (1400, 900), 
         "context_buffer_m": 4000,
-        "context_size": (1200, 800), # <-- MODIFIÉ
+        "context_size": (1200, 800),
     },
 }
 
@@ -242,16 +242,19 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         poly = Polygon(ring)
         min_lon, min_lat, max_lon, max_lat = poly.bounds
         
-        delta_lon = (max_lon - min_lon) * 0.2
-        delta_lat = (max_lat - min_lat) * 0.2
+        # CORRECTIF : Utilisation du buffer_m pour calculer les limites géographiques
+        center_lat = (min_lat + max_lat) / 2.0
+        m_per_deg_lon = 111320.0 * math.cos(math.radians(center_lat))
+        m_per_deg_lat = 110540.0
+        
+        delta_lon = buffer_m / m_per_deg_lon
+        delta_lat = buffer_m / m_per_deg_lat
+        
         min_lon -= delta_lon; max_lon += delta_lon
         min_lat -= delta_lat; max_lat += delta_lat
 
         target_aspect = image_size[0] / image_size[1]
-        lat_rad = math.radians((min_lat + max_lat) / 2.0)
-        m_per_deg_lon = 111320.0 * math.cos(lat_rad)
-        m_per_deg_lat = 110540.0
-
+        
         width_m = max((max_lon - min_lon) * m_per_deg_lon, 1.0)
         height_m = max((max_lat - min_lat) * m_per_deg_lat, 1.0)
 
@@ -300,7 +303,6 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         
         resp = requests.get(esri_url, timeout=15)
         
-        # CORRECTIF CHATGPT : Log détaillé si erreur
         if resp.status_code != 200:
             print(f"❌ Esri HTTP {resp.status_code} - Body: {resp.text[:300]}")
             
@@ -455,19 +457,7 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
 # GÉNÉRATION PDF
 # ==========================================
 def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown", image_preset=DEFAULT_PRESET, **kwargs):
-    # AUTO PRESET LOGIC
-    if polygon_points and len(polygon_points) >= 3:
-        _, area_str = calculate_geometry(polygon_points)
-        if area_str != "N/A":
-            try:
-                area_val = float(area_str.replace(" ha", ""))
-                if area_val > 80:
-                    image_preset = "wide"
-                elif area_val < 10:
-                    image_preset = "zoom"
-            except:
-                pass
-
+    # CORRECTIF : On respecte le choix de l'utilisateur, plus d'auto_preset
     preset = resolve_preset(image_preset)
     temp_id = uuid.uuid4().hex
     file_path = f"/tmp/{audit_id}_{temp_id}.pdf"
