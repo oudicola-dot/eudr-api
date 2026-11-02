@@ -15,13 +15,10 @@ GFW_API_KEY = os.getenv("GFW_API_KEY")
 DATASET_VERSION = "Hansen Global Forest Change 2025 v1.13 (2000-2025)"
 TDM_SCREENING_THRESHOLD_PCT = 5.0
 
-# ========== BUILD IDENTIFIER ==========
 _BUILD_COMMIT = os.getenv("RENDER_GIT_COMMIT", "dev-local")
 BUILD_VERSION = "v2.7+" + (_BUILD_COMMIT[:7] if _BUILD_COMMIT != "dev-local" else "dev-local")
 print(f"🚀 eudr.py START — build={BUILD_VERSION} — dataset={DATASET_VERSION}")
-# =====================================
 
-# ========== EARTH ENGINE INITIALIZATION ==========
 EE_PROJECT = os.getenv("EE_PROJECT", "superb-gear-473018-k1")
 EE_INITIALIZED = False
 
@@ -53,7 +50,6 @@ except Exception as e:
     print(f"⚠️ Earth Engine initialization failed: {e}")
 
 
-# ========== UTILS ==========
 def get_polygon_area_ha(polygon_coords):
     if not polygon_coords or len(polygon_coords) < 3:
         return None
@@ -81,7 +77,6 @@ def _finite_number(value):
     return number if math.isfinite(number) else None
 
 
-# ========== DATABASE ==========
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -129,7 +124,6 @@ def init_db():
         conn.close()
 
 
-# ========== GFW API ==========
 def compute_risk_gfw(lat: float, lon: float):
     if not GFW_API_KEY:
         return None
@@ -150,7 +144,6 @@ def compute_risk_gfw(lat: float, lon: float):
         return None
 
 
-# ========== EARTH ENGINE API ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
     if not EE_INITIALIZED:
         return None
@@ -182,7 +175,14 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
 
         dataset = ee.Image("UMD/hansen/global_forest_change_2025_v1_13")
         treecover = dataset.select("treecover2000")
-        lossyear = dataset.select("lossyear")
+        lossyear_raw = dataset.select("lossyear")
+        datamask = dataset.select("datamask")
+
+        # Masque territorial valide : terre cartographiée + observation treecover présente
+        valid_land_mask = datamask.eq(1).And(treecover.mask()).rename("valid_land")
+        # unmask(0) restaure lossyear=0 là où aucune perte n'est détectée,
+        # updateMask limite aux terres valides (exclut eau permanente / no-data).
+        lossyear = lossyear_raw.unmask(0).updateMask(valid_land_mask).rename("lossyear")
 
         treecover_val = _finite_number(
             treecover.reduceRegion(
@@ -196,7 +196,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         else:
             tree_cover_mean_ee = int(round(treecover_val))
 
-        # Diagnostics only: the authoritative pixel count is count() below.
+        # Diagnostics uniquement : la source autoritaire est count() ci-dessous.
         mask_count = lossyear.mask().reduceRegion(
             reducer=ee.Reducer.sum().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
         ).get("lossyear").getInfo()
@@ -224,7 +224,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         if area_ha is not None:
             nominal_pixels_estimate = round((area_ha * 10000) / 900)
 
-        # Strict count validation: bool must not become 1.0.
         valid_count = _finite_number(valid_pixels_raw)
 
         if (
@@ -276,8 +275,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                         ):
                             raise ValueError("INVALID_COUNT")
 
-                        # Only integer Hansen classes 0..25 are accepted.
-                        # Null/empty buckets are rejected, not silently dropped.
                         if isinstance(year_key, bool):
                             raise ValueError("INVALID_YEAR")
                         year_text = str(year_key).strip()
@@ -342,7 +339,6 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         return None
 
 
-# ========== ORCHESTRATEUR ==========
 def compute_risk(lat: float, lon: float, polygon=None):
     result = compute_risk_ee(lat, lon, polygon)
 
@@ -424,7 +420,6 @@ def compute_risk(lat: float, lon: float, polygon=None):
     }
 
 
-# ========== AUDIT FUNCTIONS ==========
 def create_audit(name: str, lat: float, lon: float, polygon=None):
     audit_id = str(uuid.uuid4())
     result = compute_risk(lat, lon, polygon)
@@ -474,6 +469,7 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
 
 def get_audit(audit_id: str):
     conn = get_conn()
+    row = None
     try:
         c = conn.cursor()
         c.execute("""
