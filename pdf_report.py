@@ -153,9 +153,7 @@ def get_loss_display(status, loss_year):
         return "N/A"
     return format_loss_year(loss_year)
 
-# CORRECTIF : Ajout de la fonction pour créer un carré virtuel
 def _make_box(lat, lon, size_m=100):
-    """Crée un petit carré autour d'un point pour générer une carte."""
     delta_deg = (size_m / 2) / 111320.0
     return [
         [lon - delta_deg, lat - delta_deg],
@@ -288,7 +286,7 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         
         img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
         info = "Esri World Imagery (High Resolution)"
-        return (img, info, (min_lon, max_lat, min_lat, max_lat), None)
+        return (img, info, (min_lon, max_lon, min_lat, max_lat), None)
         
     except Exception as e:
         print(f"⚠️ Esri a échoué, on bascule sur Sentinel-2 : {e}")
@@ -319,7 +317,7 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
             resp.raise_for_status()
             img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
             
-            return (img, info, (min_lon, max_lat, min_lat, max_lat), None)
+            return (img, info, (min_lon, max_lon, min_lat, max_lat), None)
             
         except Exception as e2:
             print(f"❌ Fallback Sentinel-2 échoué : {e2}")
@@ -435,6 +433,19 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
 # GÉNÉRATION PDF
 # ==========================================
 def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown", image_preset=DEFAULT_PRESET, **kwargs):
+    # AUTO PRESET LOGIC
+    if polygon_points and len(polygon_points) >= 3:
+        _, area_str = calculate_geometry(polygon_points)
+        if area_str != "N/A":
+            try:
+                area_val = float(area_str.replace(" ha", ""))
+                if area_val > 80:
+                    image_preset = "wide"
+                elif area_val < 10:
+                    image_preset = "zoom"
+            except:
+                pass
+
     preset = resolve_preset(image_preset)
     temp_id = uuid.uuid4().hex
     file_path = f"/tmp/{audit_id}_{temp_id}.pdf"
@@ -444,7 +455,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
     success = False
 
     try:
-        # VERROUILLAGE SUR LA BASE DE DONNÉES
         full_audit = get_audit(audit_id)
         if not full_audit:
             raise ValueError(f"CRITICAL: Audit {audit_id} introuvable en DB.")
@@ -503,7 +513,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(id_table)
         content.append(Spacer(1, 0.5 * cm))
 
-        # CORRECTIF : GESTION DU POINT SEUL POUR LA CARTE PARCELLAIRE
         map_poly = None
         if polygon_points and len(polygon_points) >= 3:
             map_poly = polygon_points
@@ -537,7 +546,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
         content.append(Spacer(1, 0.5 * cm))
 
-        # RÉSULTATS
         status_color = "#1E3A32" if "NO POST-2020" in safe_status else "#CC0000" if "POTENTIAL" in safe_status else "#D97706" if "INSUFFICIENT DATA" in safe_status else "#F59E0B"
         tc_display, score_display = format_val(tree_cover, "%", 0, 100), format_val(risk_score, "", 0, 100)
         loss_display = get_loss_display(safe_status, loss_year)
@@ -555,7 +563,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         disclaimer.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), TDM_LIGHT_GREEN), ("BOX", (0, 0), (-1, -1), 1, TDM_GREEN), ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10)]))
         content.append(disclaimer)
 
-        # PAGE 2
         content.append(PageBreak())
         content.append(Paragraph("TECHNICAL ASSESSMENT ANNEX", styles["TDMSection"]))
         content.append(Spacer(1, 0.3 * cm))
@@ -618,7 +625,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(Paragraph("TERRITORIAL CONTEXT", styles["TDMSection"]))
         content.append(Spacer(1, 0.3 * cm))
 
-        # CORRECTIF : GESTION DU POINT SEUL POUR LA CARTE DE CONTEXTE
         if map_poly and lat is not None and lon is not None:
             context_map, context_info, context_err = generate_context_map(map_poly, lat, lon, context_path, buffer_m=preset["context_buffer_m"], image_size=preset["context_size"])
         else:
