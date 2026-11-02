@@ -7,22 +7,24 @@ import os
 
 class TestEUDRLogic(unittest.TestCase):
 
-    # --- Helper de configuration Earth Engine ---
     def configure_ee_mocks(self, mock_ee, histogram, valid_pixels=1000):
-        # Chaîne MAIN : treecover -> valid_pixels (count) -> histogram
-        main = (
-            mock_ee.Image.return_value.select.return_value
-            .reduceRegion.return_value.get.return_value.getInfo
-        )
-        main.side_effect = [80, valid_pixels, histogram]
-
-        # Branches indépendantes créées par mask(), eq(), gt()
         base = mock_ee.Image.return_value.select.return_value
-        base.mask.return_value.reduceRegion.return_value.get.return_value.getInfo.return_value = valid_pixels
-        base.eq.return_value.reduceRegion.return_value.get.return_value.getInfo.return_value = valid_pixels
-        base.gt.return_value.reduceRegion.return_value.get.return_value.getInfo.return_value = 0
 
-    # --- Tests compute_risk_ee ---
+        # treecover : appel reduceRegion direct sur select()
+        base.reduceRegion.return_value.get.return_value.getInfo.return_value = 80
+
+        # lossyear après unmask(0).updateMask(...).rename("lossyear")
+        ly = (
+            base.unmask.return_value
+            .updateMask.return_value
+            .rename.return_value
+        )
+        # deux appels à ly.reduceRegion : unmasked_count puis histogram
+        ly.reduceRegion.return_value.get.return_value.getInfo.side_effect = [valid_pixels, histogram]
+        # branches parallèles sur lossyear
+        ly.mask.return_value.reduceRegion.return_value.get.return_value.getInfo.return_value = valid_pixels
+        ly.eq.return_value.reduceRegion.return_value.get.return_value.getInfo.return_value = valid_pixels
+        ly.gt.return_value.reduceRegion.return_value.get.return_value.getInfo.return_value = 0
 
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
@@ -76,7 +78,21 @@ class TestEUDRLogic(unittest.TestCase):
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
 
-    # --- Tests compute_risk (orchestrateur) ---
+    @patch('eudr.EE_INITIALIZED', True)
+    @patch('eudr.ee')
+    def test_boolean_pixel_count_rejected(self, mock_ee):
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
+        self.configure_ee_mocks(mock_ee, None)
+        ly = (
+            mock_ee.Image.return_value.select.return_value
+            .unmask.return_value
+            .updateMask.return_value
+            .rename.return_value
+        )
+        ly.reduceRegion.return_value.get.return_value.getInfo.side_effect = [True, {}]
+        res = eudr.compute_risk_ee(4.5, -74.2)
+        self.assertTrue(res["insufficient_data"])
+        self.assertEqual(res["insufficient_reason"], "INVALID_VALID_PIXEL_COUNT")
 
     @patch('eudr.compute_risk_ee')
     def test_orchestrator_invalid_loss_pct(self, mock_ee):
@@ -84,16 +100,10 @@ class TestEUDRLogic(unittest.TestCase):
         for val in invalid_values:
             with self.subTest(val=val):
                 mock_ee.return_value = {
-                    "tree_cover_mean_ee": 50,
-                    "loss_percentage": val,
-                    "last_loss_year": 0,
-                    "source": "ee",
-                    "insufficient_data": False,
-                    "estimated_coverage_pct": 100.0,
-                    "valid_pixels": 100,
-                    "nominal_pixels_estimate": 100,
-                    "insufficient_reason": None,
-                    "treecover_reason": None
+                    "tree_cover_mean_ee": 50, "loss_percentage": val, "last_loss_year": 0,
+                    "source": "ee", "insufficient_data": False, "estimated_coverage_pct": 100.0,
+                    "valid_pixels": 100, "nominal_pixels_estimate": 100,
+                    "insufficient_reason": None, "treecover_reason": None
                 }
                 res = eudr.compute_risk(4.5, -74.2)
                 self.assertEqual(res["eudr_status"], "INSUFFICIENT DATA")
@@ -110,22 +120,14 @@ class TestEUDRLogic(unittest.TestCase):
         for loss_pct, expected_status, expected_level in test_cases:
             with self.subTest(loss_pct=loss_pct):
                 mock_ee.return_value = {
-                    "tree_cover_mean_ee": 50,
-                    "loss_percentage": loss_pct,
-                    "last_loss_year": 2022,
-                    "source": "ee",
-                    "insufficient_data": False,
-                    "estimated_coverage_pct": 100.0,
-                    "valid_pixels": 100,
-                    "nominal_pixels_estimate": 100,
-                    "insufficient_reason": None,
-                    "treecover_reason": None
+                    "tree_cover_mean_ee": 50, "loss_percentage": loss_pct, "last_loss_year": 2022,
+                    "source": "ee", "insufficient_data": False, "estimated_coverage_pct": 100.0,
+                    "valid_pixels": 100, "nominal_pixels_estimate": 100,
+                    "insufficient_reason": None, "treecover_reason": None
                 }
                 res = eudr.compute_risk(4.5, -74.2)
                 self.assertEqual(res["eudr_status"], expected_status)
                 self.assertEqual(res["risk_level"], expected_level)
-
-    # --- Tests SQLite ---
 
     def test_sqlite_migration_and_read_null(self):
         test_db = "test_eudr.db"
@@ -148,19 +150,10 @@ class TestEUDRLogic(unittest.TestCase):
             eudr.init_db()
             with patch('eudr.compute_risk') as mock_risk:
                 mock_risk.return_value = {
-                    "risk_score": 50,
-                    "risk_level": "MEDIUM",
-                    "eudr_status": "POTENTIAL LOSS SIGNAL",
-                    "tree_cover": 80,
-                    "loss_year": 2022,
-                    "source": "ee",
-                    "dataset_version": "TEST_V1",
-                    "valid_pixels": 100,
-                    "nominal_pixels_estimate": 100,
-                    "estimated_coverage_pct": 100.0,
-                    "insufficient_reason": None,
-                    "treecover_reason": None,
-                    "build_version": "TEST_BUILD"
+                    "risk_score": 50, "risk_level": "MEDIUM", "eudr_status": "POTENTIAL LOSS SIGNAL",
+                    "tree_cover": 80, "loss_year": 2022, "source": "ee", "dataset_version": "TEST_V1",
+                    "valid_pixels": 100, "nominal_pixels_estimate": 100, "estimated_coverage_pct": 100.0,
+                    "insufficient_reason": None, "treecover_reason": None, "build_version": "TEST_BUILD"
                 }
                 audit = eudr.create_audit("New Farm", 4.5, -74.2)
                 read_audit = eudr.get_audit(audit["audit_id"])
