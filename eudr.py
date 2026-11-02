@@ -186,9 +186,35 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             tree_cover_mean_ee = int(round(treecover_val))
             treecover_reason = None
 
+        # ==========================================
+        # DIAGNOSTIC TEMPORAIRE (Recommandé par ChatGPT)
+        # ==========================================
         valid_pixels_raw = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
         ).get('lossyear').getInfo()
+
+        zero_pixels_raw = lossyear.eq(0).reduceRegion(
+            reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
+        ).get('lossyear').getInfo()
+
+        loss_hist = lossyear.reduceRegion(
+            reducer=ee.Reducer.frequencyHistogram().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
+        ).get('lossyear').getInfo()
+
+        print("=== HANSEN HISTOGRAM DIAGNOSTIC ===")
+        print(f"Valid pixels (count): {valid_pixels_raw}")
+        print(f"Zero pixels (eq 0): {zero_pixels_raw}")
+        print(f"Histogram raw: {loss_hist}")
+        
+        if isinstance(loss_hist, dict):
+            histogram_total = sum(float(v) for v in loss_hist.values())
+            print(f"Histogram total: {histogram_total}")
+            print(f"Histogram zero bucket ('0'): {loss_hist.get('0')}")
+            print(f"Histogram zero bucket (0): {loss_hist.get(0)}")
+            if isinstance(valid_pixels_raw, (int, float)):
+                print(f"Difference (Hist - Valid): {histogram_total - valid_pixels_raw}")
+        print("=== END DIAGNOSTIC ===")
+        # ==========================================
 
         if area_ha is not None and area_ha > 0:
             nominal_pixels_estimate = round((area_ha * 10000) / 900)
@@ -213,10 +239,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             if nominal_pixels_estimate > 0:
                 estimated_coverage_pct = round((valid_pixels / nominal_pixels_estimate) * 100, 2)
 
-            loss_hist = lossyear.reduceRegion(
-                reducer=ee.Reducer.frequencyHistogram().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-            ).get('lossyear').getInfo()
-
+            # (Note : loss_hist a déjà été récupéré dans le diagnostic, on ne le recharge pas)
             if loss_hist is None or (isinstance(loss_hist, dict) and not loss_hist):
                 hist_insufficient = False
                 loss_percentage = 0.0
