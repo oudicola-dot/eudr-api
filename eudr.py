@@ -213,12 +213,12 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 reducer=ee.Reducer.frequencyHistogram().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
             ).get('lossyear').getInfo()
 
-            if loss_hist is None:
-                hist_insufficient = True
-                hist_reason = "HISTOGRAM_NULL"
-            elif isinstance(loss_hist, dict) and not loss_hist:
-                hist_insufficient = True
-                hist_reason = "HISTOGRAM_EMPTY"
+            # CORRECTIF : Si l'histogramme est vide ou NULL, c'est qu'il n'y a pas eu de perte.
+            # On considère donc que loss_percentage = 0.0 au lieu de planter.
+            if loss_hist is None or (isinstance(loss_hist, dict) and not loss_hist):
+                hist_insufficient = False
+                loss_percentage = 0.0
+                last_loss_year = 0
             elif not isinstance(loss_hist, dict):
                 hist_insufficient = True
                 hist_reason = "HISTOGRAM_INVALID_TYPE"
@@ -233,8 +233,9 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                         if not math.isfinite(count_float) or count_float < 0:
                             raise ValueError("INVALID_COUNT")
                         
+                        # CORRECTIF : Si une clé est "null", on l'ignore au lieu de planter.
                         if year_str is None or str(year_str).strip().lower() in ("null", "none", ""):
-                            raise ValueError("NULL_BUCKET")
+                            continue
                         
                         year_int = int(year_str)
                         if year_int < 0 or year_int > 25:
