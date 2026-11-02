@@ -173,7 +173,7 @@ def format_loss_year(val):
     if (isinstance(val, bool) or val is None or not isinstance(val, (int, float))): return "N/A"
     if not math.isfinite(val) or not float(val).is_integer(): return "N/A"
     year = int(val)
-    if year == 0: return "no_loss"
+    if year == 0: return "No loss detected"
     if 2001 <= year <= 2025: return str(year)
     return "N/A"
 
@@ -524,8 +524,7 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         # --- KPI DASHBOARD ---
         tc_display, score_display = format_val(tree_cover, "%", 0, 100), format_val(risk_score, "", 0, 100)
         loss_display = get_loss_display(status_for_color, loss_year)
-        if loss_display == "no_loss":
-            loss_display = t("no_loss_detected")
+        
 
         # --- FIX: CORRECTION COULEUR BELOW TDM ---
         if "NO POST-2020" in status_for_color:
