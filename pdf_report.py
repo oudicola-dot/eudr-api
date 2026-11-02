@@ -67,26 +67,26 @@ TDM_GRAY = colors.HexColor("#F5F5F5")
 _EE_CONFIRMED = False
 
 # ==========================================
-# PRESETS DE CADRAGE SATELLITE
+# PRESETS DE CADRAGE SATELLITE (Modifié)
 # ==========================================
 IMAGE_PRESETS = {
     "standard": {
         "parcel_buffer_m": 300,
         "parcel_size": (1200, 800), 
         "context_buffer_m": 2500,
-        "context_size": (1800, 1100),
+        "context_size": (1200, 800), # <-- MODIFIÉ
     },
     "zoom": {
         "parcel_buffer_m": 150,   
         "parcel_size": (1000, 700), 
         "context_buffer_m": 1500,
-        "context_size": (1800, 1100),
+        "context_size": (1200, 800), # <-- MODIFIÉ
     },
     "wide": {
         "parcel_buffer_m": 600,   
         "parcel_size": (1400, 900), 
         "context_buffer_m": 4000,
-        "context_size": (1800, 1100),
+        "context_size": (1200, 800), # <-- MODIFIÉ
     },
 }
 
@@ -255,7 +255,7 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         width_m = max((max_lon - min_lon) * m_per_deg_lon, 1.0)
         height_m = max((max_lat - min_lat) * m_per_deg_lat, 1.0)
 
-        # PATCH CHATGPT : BBOX minimum de 500m pour Esri (calculé en mètres)
+        # BBOX minimum de 500m pour Esri
         min_size_m = 500.0
         center_lon = (min_lon + max_lon) / 2.0
         center_lat = (min_lat + max_lat) / 2.0
@@ -288,6 +288,8 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         if width_m < 200:
             image_size = (600, 400) 
 
+        print(f"🔎 Esri Request: buffer={buffer_m}m, bbox=({min_lon:.4f},{min_lat:.4f},{max_lon:.4f},{max_lat:.4f}), size={image_size}")
+        
         esri_url = (
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
             f"?bbox={min_lon},{min_lat},{max_lon},{max_lat}"
@@ -297,6 +299,11 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         )
         
         resp = requests.get(esri_url, timeout=15)
+        
+        # CORRECTIF CHATGPT : Log détaillé si erreur
+        if resp.status_code != 200:
+            print(f"❌ Esri HTTP {resp.status_code} - Body: {resp.text[:300]}")
+            
         resp.raise_for_status()
         
         img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
@@ -623,7 +630,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
             if insufficient_reason:
                 content.append(Paragraph(f"<b>Insufficiency Reason:</b> {html.escape(str(insufficient_reason))}", styles["TDMValue"]))
                 
-                # PATCH CHATGPT : Texte neutre pour NO_VALID_LOSS_PIXELS
                 if insufficient_reason == "NO_VALID_LOSS_PIXELS":
                     content.append(Spacer(1, 0.2 * cm))
                     content.append(Paragraph(
@@ -635,7 +641,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
                         styles["TDMLegal"]
                     ))
 
-                # PATCH CHATGPT : Clarté sur la couverture vs le taux de perte
                 if insufficient_reason == "COVERAGE_BELOW_5_PCT":
                     content.append(Spacer(1, 0.2 * cm))
                     content.append(Paragraph(
