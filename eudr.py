@@ -5,7 +5,7 @@ import requests
 import ee
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from security import sign_audit
 from shapely.geometry import Polygon
 from pyproj import Geod
@@ -52,6 +52,7 @@ try:
 except Exception as e:
     print(f"⚠️ Earth Engine initialization failed: {e}")
 
+
 # ========== UTILS ==========
 def get_polygon_area_ha(polygon_coords):
     if not polygon_coords or len(polygon_coords) < 3:
@@ -68,49 +69,65 @@ def get_polygon_area_ha(polygon_coords):
     except Exception:
         return None
 
+
+def _finite_number(value):
+    """Retourne un float fini; refuse explicitement les booléens."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 # ========== DATABASE ==========
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+
 def init_db():
     conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS audits (
-        audit_id TEXT PRIMARY KEY,
-        farm_name TEXT,
-        latitude REAL,
-        longitude REAL,
-        risk_score INTEGER,
-        risk_level TEXT,
-        eudr_compliant TEXT,
-        tree_cover INTEGER,
-        loss_year INTEGER,
-        source TEXT,
-        polygon_points TEXT,
-        status TEXT,
-        issuer TEXT,
-        signature TEXT,
-        created_at TEXT
-    )
-    """)
-    c.execute("PRAGMA table_info(audits)")
-    columns = [row[1] for row in c.fetchall()]
-    new_columns = {
-        "dataset_version": "TEXT",
-        "valid_pixels": "INTEGER",
-        "nominal_pixels_estimate": "INTEGER",
-        "estimated_coverage_pct": "REAL",
-        "insufficient_reason": "TEXT",
-        "treecover_reason": "TEXT",
-        "build_version": "TEXT"
-    }
-    for col, col_type in new_columns.items():
-        if col not in columns:
-            print(f"🔄 Migration DB : ajout de la colonne {col}")
-            c.execute(f"ALTER TABLE audits ADD COLUMN {col} {col_type}")
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS audits (
+            audit_id TEXT PRIMARY KEY,
+            farm_name TEXT,
+            latitude REAL,
+            longitude REAL,
+            risk_score INTEGER,
+            risk_level TEXT,
+            eudr_compliant TEXT,
+            tree_cover INTEGER,
+            loss_year INTEGER,
+            source TEXT,
+            polygon_points TEXT,
+            status TEXT,
+            issuer TEXT,
+            signature TEXT,
+            created_at TEXT
+        )
+        """)
+        c.execute("PRAGMA table_info(audits)")
+        columns = [row[1] for row in c.fetchall()]
+        new_columns = {
+            "dataset_version": "TEXT",
+            "valid_pixels": "INTEGER",
+            "nominal_pixels_estimate": "INTEGER",
+            "estimated_coverage_pct": "REAL",
+            "insufficient_reason": "TEXT",
+            "treecover_reason": "TEXT",
+            "build_version": "TEXT"
+        }
+        for col, col_type in new_columns.items():
+            if col not in columns:
+                print(f"🔄 Migration DB : ajout de la colonne {col}")
+                c.execute(f"ALTER TABLE audits ADD COLUMN {col} {col_type}")
+        conn.commit()
+    finally:
+        conn.close()
+
 
 # ========== GFW API ==========
 def compute_risk_gfw(lat: float, lon: float):
@@ -124,13 +141,14 @@ def compute_risk_gfw(lat: float, lon: float):
             return None
         data = response.json()
         tree_cover = 0
-        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+        if "data" in data and isinstance(data["data"], list) and data["data"]:
             tree_cover = data["data"][0].get("treeCover", 0)
         elif "treeCover" in data:
             tree_cover = data.get("treeCover", 0)
         return {"tree_cover_gfw_2000": tree_cover, "source": "gfw"}
     except Exception:
         return None
+
 
 # ========== EARTH ENGINE API ==========
 def compute_risk_ee(lat: float, lon: float, polygon=None):
@@ -150,53 +168,50 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
     tree_cover_mean_ee = -1
 
     try:
-        if polygon and len(polygon) >= 3:
+        if polygon is not None and len(polygon) >= 3:
             geometry = ee.Geometry.Polygon(polygon)
         else:
-            point = ee.Geometry.Point(lon, lat)
-            geometry = point.buffer(30)
+            geometry = ee.Geometry.Point(lon, lat).buffer(30)
 
         try:
-            area_sq_m = geometry.area(maxError=1).getInfo()
-            area_ha = area_sq_m / 10000.0
+            area_sq_m = _finite_number(geometry.area(maxError=1).getInfo())
+            area_ha = area_sq_m / 10000.0 if area_sq_m is not None and area_sq_m > 0 else None
         except Exception as e:
             print(f"❌ Erreur calcul surface EE : {e}")
             area_ha = None
 
-        dataset = ee.Image('UMD/hansen/global_forest_change_2025_v1_13')
-        treecover = dataset.select('treecover2000')
-        lossyear = dataset.select('lossyear')
+        dataset = ee.Image("UMD/hansen/global_forest_change_2025_v1_13")
+        treecover = dataset.select("treecover2000")
+        lossyear = dataset.select("lossyear")
 
-        treecover_val = treecover.reduceRegion(
-            reducer=ee.Reducer.mean(), geometry=geometry, scale=30, maxPixels=1e9
-        ).get('treecover2000').getInfo()
+        treecover_val = _finite_number(
+            treecover.reduceRegion(
+                reducer=ee.Reducer.mean(), geometry=geometry, scale=30, maxPixels=1e9
+            ).get("treecover2000").getInfo()
+        )
 
-        if treecover_val is None or not math.isfinite(treecover_val) or treecover_val < 0:
+        if treecover_val is None or treecover_val < 0 or treecover_val > 100:
             tree_cover_mean_ee = -1
             treecover_reason = "TREECOVER_UNAVAILABLE"
         else:
             tree_cover_mean_ee = int(round(treecover_val))
-            treecover_reason = None
 
-        # ==========================================
-        # DIAGNOSTIC DU MASQUE
-        # ==========================================
-        mask_image = lossyear.mask()
-        mask_count = mask_image.reduceRegion(
+        # Diagnostics only: the authoritative pixel count is count() below.
+        mask_count = lossyear.mask().reduceRegion(
             reducer=ee.Reducer.sum().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-        ).get('lossyear').getInfo()
+        ).get("lossyear").getInfo()
 
         unmasked_count = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-        ).get('lossyear').getInfo()
+        ).get("lossyear").getInfo()
 
         zero_count = lossyear.eq(0).reduceRegion(
             reducer=ee.Reducer.sum().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-        ).get('lossyear').getInfo()
+        ).get("lossyear").getInfo()
 
         positive_count = lossyear.gt(0).reduceRegion(
             reducer=ee.Reducer.sum().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-        ).get('lossyear').getInfo()
+        ).get("lossyear").getInfo()
 
         print("=== HANSEN MASK DIAGNOSTIC ===")
         print("Mask sum:", mask_count)
@@ -204,50 +219,42 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         print("Zero count:", zero_count)
         print("Positive count:", positive_count)
         print("=== END HANSEN MASK DIAGNOSTIC ===")
-        # ==========================================
 
         valid_pixels_raw = unmasked_count
-
-        if area_ha is not None and area_ha > 0:
+        if area_ha is not None:
             nominal_pixels_estimate = round((area_ha * 10000) / 900)
 
-        # CORRECTIF CHATGPT : Validation stricte du comptage
-        try:
-            valid_count = float(valid_pixels_raw)
-        except (TypeError, ValueError):
-            valid_count = None
+        # Strict count validation: bool must not become 1.0.
+        valid_count = _finite_number(valid_pixels_raw)
 
         if (
             valid_count is None
-            or not math.isfinite(valid_count)
             or valid_count < 0
             or abs(valid_count - round(valid_count)) > 1e-6
         ):
             loss_insufficient = True
-            valid_pixels = None
             pixel_error_reason = "INVALID_VALID_PIXEL_COUNT"
-            loss_percentage = -1
-            last_loss_year = -1
         elif valid_count == 0:
             loss_insufficient = True
             valid_pixels = 0
             pixel_error_reason = "NO_VALID_LOSS_PIXELS"
+        else:
+            valid_pixels = int(round(valid_count))
+
+        if loss_insufficient:
             loss_percentage = -1
             last_loss_year = -1
         else:
-            valid_pixels = int(round(valid_count))
-            loss_insufficient = False
-            pixel_error_reason = None
-
-        if not loss_insufficient:
             if nominal_pixels_estimate is not None and nominal_pixels_estimate > 0:
-                estimated_coverage_pct = round((valid_pixels / nominal_pixels_estimate) * 100, 2)
+                estimated_coverage_pct = round(
+                    (valid_pixels / nominal_pixels_estimate) * 100, 2
+                )
 
             loss_hist = lossyear.reduceRegion(
-                reducer=ee.Reducer.frequencyHistogram().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-            ).get('lossyear').getInfo()
+                reducer=ee.Reducer.frequencyHistogram().unweighted(),
+                geometry=geometry, scale=30, maxPixels=1e9
+            ).get("lossyear").getInfo()
 
-            # CORRECTIF CHATGPT : Histogramme vide AVEC pixels valides = suspect
             if loss_hist is None or (isinstance(loss_hist, dict) and not loss_hist):
                 hist_insufficient = True
                 hist_reason = "HISTOGRAM_EMPTY_WITH_VALID_PIXELS"
@@ -256,44 +263,60 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 hist_reason = "HISTOGRAM_INVALID_TYPE"
             else:
                 try:
-                    histogram_pixels = 0
-                    post_2020_pixels = 0
+                    histogram_pixels = 0.0
+                    post_2020_pixels = 0.0
                     last_loss_year_idx = 0
 
-                    for year_str, count in loss_hist.items():
-                        count_float = float(count)
-                        if not math.isfinite(count_float) or count_float < 0:
+                    for year_key, count_raw in loss_hist.items():
+                        count_value = _finite_number(count_raw)
+                        if (
+                            count_value is None
+                            or count_value < 0
+                            or abs(count_value - round(count_value)) > 1e-6
+                        ):
                             raise ValueError("INVALID_COUNT")
 
-                        if year_str is None or str(year_str).strip().lower() in ("null", "none", ""):
-                            continue
-
-                        year_int = int(year_str)
-                        if year_int < 0 or year_int > 25:
+                        # Only integer Hansen classes 0..25 are accepted.
+                        # Null/empty buckets are rejected, not silently dropped.
+                        if isinstance(year_key, bool):
+                            raise ValueError("INVALID_YEAR")
+                        year_text = str(year_key).strip()
+                        if not year_text.isdigit():
                             raise ValueError("INVALID_YEAR")
 
-                        histogram_pixels += count_float
-                        if year_int > 20:
-                            post_2020_pixels += count_float
-                        if year_int > last_loss_year_idx:
-                            last_loss_year_idx = year_int
+                        year_int = int(year_text)
+                        if year_int > 25:
+                            raise ValueError("INVALID_YEAR")
 
-                    if not math.isfinite(histogram_pixels) or histogram_pixels <= 0 or abs(histogram_pixels - valid_pixels) > 0.01:
+                        histogram_pixels += count_value
+                        if year_int > 20:
+                            post_2020_pixels += count_value
+                        last_loss_year_idx = max(last_loss_year_idx, year_int)
+
+                    if (
+                        not math.isfinite(histogram_pixels)
+                        or histogram_pixels <= 0
+                        or abs(histogram_pixels - valid_pixels) > 0.01
+                    ):
                         raise ValueError("HISTOGRAM_MISMATCH")
 
-                    loss_percentage = (post_2020_pixels / valid_pixels * 100)
-                    if not math.isfinite(loss_percentage) or loss_percentage < 0 or loss_percentage > 100:
+                    loss_percentage = (post_2020_pixels / valid_pixels) * 100
+                    if not math.isfinite(loss_percentage) or not 0 <= loss_percentage <= 100:
                         raise ValueError("INVALID_PERCENTAGE")
 
                     last_loss_year = 2000 + last_loss_year_idx if last_loss_year_idx > 0 else 0
 
-                except (TypeError, ValueError) as e:
+                except (TypeError, ValueError, OverflowError) as e:
                     hist_insufficient = True
-                    hist_reason = str(e) if str(e) in ["NULL_BUCKET", "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE", "INVALID_YEAR", "INVALID_COUNT"] else "INVALID_DATA"
+                    reason = str(e)
+                    allowed = {
+                        "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE",
+                        "INVALID_YEAR", "INVALID_COUNT"
+                    }
+                    hist_reason = reason if reason in allowed else "INVALID_DATA"
                     print(f"⚠️ EE: Erreur histogramme : {hist_reason}")
 
         is_loss_insufficient = loss_insufficient or hist_insufficient
-
         if hist_insufficient:
             insufficient_reason = hist_reason
         elif loss_insufficient:
@@ -313,13 +336,16 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
             "nominal_pixels_estimate": nominal_pixels_estimate,
             "estimated_coverage_pct": estimated_coverage_pct
         }
+
     except Exception as e:
         print(f"❌ Earth Engine error: {e}")
         return None
 
+
 # ========== ORCHESTRATEUR ==========
 def compute_risk(lat: float, lon: float, polygon=None):
     result = compute_risk_ee(lat, lon, polygon)
+
     if result:
         if result.get("insufficient_data"):
             return {
@@ -332,7 +358,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "insufficient_reason": result["insufficient_reason"], "treecover_reason": result["treecover_reason"]
             }
 
-        coverage = result.get("estimated_coverage_pct")
+        coverage = _finite_number(result.get("estimated_coverage_pct"))
         if coverage is None or coverage < TDM_SCREENING_THRESHOLD_PCT:
             return {
                 "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA",
@@ -341,21 +367,21 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "tree_cover_mean_ee": result["tree_cover_mean_ee"], "tree_cover_gfw_2000": None,
                 "valid_pixels": result["valid_pixels"], "nominal_pixels_estimate": result["nominal_pixels_estimate"],
                 "estimated_coverage_pct": coverage,
-                "insufficient_reason": "COVERAGE_BELOW_5_PCT",
-                "treecover_reason": result["treecover_reason"]
+                "insufficient_reason": "COVERAGE_BELOW_5_PCT", "treecover_reason": result["treecover_reason"]
             }
 
-        loss_pct = result["loss_percentage"]
-
-        if loss_pct is None or not math.isfinite(loss_pct) or loss_pct < 0:
+        loss_pct = _finite_number(result.get("loss_percentage"))
+        if loss_pct is None or loss_pct < 0 or loss_pct > 100:
             return {
                 "risk_score": -1, "risk_level": "UNAVAILABLE", "eudr_status": "INSUFFICIENT DATA",
-                "tree_cover": result.get("tree_cover_mean_ee", -1), "loss_year": -1, "source": result.get("source", "ee"),
-                "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION,
-                "tree_cover_mean_ee": result.get("tree_cover_mean_ee", -1), "tree_cover_gfw_2000": None,
-                "valid_pixels": result.get("valid_pixels"), "nominal_pixels_estimate": result.get("nominal_pixels_estimate"),
+                "tree_cover": result.get("tree_cover_mean_ee", -1), "loss_year": -1,
+                "source": result.get("source", "ee"), "dataset_version": DATASET_VERSION,
+                "_build": BUILD_VERSION, "tree_cover_mean_ee": result.get("tree_cover_mean_ee", -1),
+                "tree_cover_gfw_2000": None, "valid_pixels": result.get("valid_pixels"),
+                "nominal_pixels_estimate": result.get("nominal_pixels_estimate"),
                 "estimated_coverage_pct": result.get("estimated_coverage_pct"),
-                "insufficient_reason": "INVALID_LOSS_PERCENTAGE", "treecover_reason": result.get("treecover_reason")
+                "insufficient_reason": "INVALID_LOSS_PERCENTAGE",
+                "treecover_reason": result.get("treecover_reason")
             }
 
         if loss_pct > 5.0:
@@ -369,8 +395,8 @@ def compute_risk(lat: float, lon: float, polygon=None):
 
         return {
             "risk_score": risk_score, "risk_level": risk_level, "eudr_status": status,
-            "tree_cover": result["tree_cover_mean_ee"], "loss_year": result["last_loss_year"], "source": result["source"],
-            "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION,
+            "tree_cover": result["tree_cover_mean_ee"], "loss_year": result["last_loss_year"],
+            "source": result["source"], "dataset_version": DATASET_VERSION, "_build": BUILD_VERSION,
             "tree_cover_mean_ee": result["tree_cover_mean_ee"], "tree_cover_gfw_2000": None,
             "valid_pixels": result["valid_pixels"], "nominal_pixels_estimate": result["nominal_pixels_estimate"],
             "estimated_coverage_pct": result["estimated_coverage_pct"],
@@ -397,6 +423,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
         "insufficient_reason": "EE_UNAVAILABLE", "treecover_reason": None
     }
 
+
 # ========== AUDIT FUNCTIONS ==========
 def create_audit(name: str, lat: float, lon: float, polygon=None):
     audit_id = str(uuid.uuid4())
@@ -409,7 +436,8 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
         "eudr_status": result["eudr_status"], "eudr_compliant": result["eudr_status"],
         "tree_cover": result["tree_cover"], "loss_year": result["loss_year"], "source": result["source"],
         "polygon_points": json.dumps(polygon) if polygon else None, "status": "CREATED",
-        "issuer": "Tierras de Montaña", "signature": signature, "created_at": datetime.utcnow().isoformat(),
+        "issuer": "Tierras de Montaña", "signature": signature,
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset_version": result["dataset_version"],
         "valid_pixels": result.get("valid_pixels"),
         "nominal_pixels_estimate": result.get("nominal_pixels_estimate"),
@@ -420,38 +448,48 @@ def create_audit(name: str, lat: float, lon: float, polygon=None):
     }
 
     conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO audits (
-            audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
-            tree_cover, loss_year, source, polygon_points, status, issuer, signature, created_at, dataset_version,
-            valid_pixels, nominal_pixels_estimate, estimated_coverage_pct, insufficient_reason, treecover_reason,
-            build_version
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        audit["audit_id"], audit["farm_name"], audit["latitude"], audit["longitude"], audit["risk_score"], audit["risk_level"], audit["eudr_compliant"],
-        audit["tree_cover"], audit["loss_year"], audit["source"], audit["polygon_points"], audit["status"], audit["issuer"], audit["signature"], audit["created_at"],
-        audit["dataset_version"], audit["valid_pixels"], audit["nominal_pixels_estimate"], audit["estimated_coverage_pct"], audit["insufficient_reason"], audit["treecover_reason"],
-        audit["build_version"]
-    ))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO audits (
+                audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
+                tree_cover, loss_year, source, polygon_points, status, issuer, signature, created_at,
+                dataset_version, valid_pixels, nominal_pixels_estimate, estimated_coverage_pct,
+                insufficient_reason, treecover_reason, build_version
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            audit["audit_id"], audit["farm_name"], audit["latitude"], audit["longitude"],
+            audit["risk_score"], audit["risk_level"], audit["eudr_compliant"], audit["tree_cover"],
+            audit["loss_year"], audit["source"], audit["polygon_points"], audit["status"],
+            audit["issuer"], audit["signature"], audit["created_at"], audit["dataset_version"],
+            audit["valid_pixels"], audit["nominal_pixels_estimate"], audit["estimated_coverage_pct"],
+            audit["insufficient_reason"], audit["treecover_reason"], audit["build_version"]
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
     return audit
+
 
 def get_audit(audit_id: str):
     conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-        SELECT
-            audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
-            tree_cover, loss_year, source, polygon_points, status, issuer, signature, created_at,
-            dataset_version, valid_pixels, nominal_pixels_estimate, estimated_coverage_pct, insufficient_reason, treecover_reason,
-            build_version
-        FROM audits WHERE audit_id=?
-    """, (audit_id,))
-    row = c.fetchone()
-    conn.close()
-    if not row: return None
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT
+                audit_id, farm_name, latitude, longitude, risk_score, risk_level, eudr_compliant,
+                tree_cover, loss_year, source, polygon_points, status, issuer, signature, created_at,
+                dataset_version, valid_pixels, nominal_pixels_estimate, estimated_coverage_pct,
+                insufficient_reason, treecover_reason, build_version
+            FROM audits WHERE audit_id=?
+        """, (audit_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
 
     return {
         "audit_id": row[0], "farm_name": row[1], "latitude": row[2], "longitude": row[3],
@@ -459,11 +497,7 @@ def get_audit(audit_id: str):
         "tree_cover": row[7], "loss_year": row[8], "source": row[9],
         "polygon_points": json.loads(row[10]) if row[10] else None,
         "status": row[11], "issuer": row[12], "signature": row[13], "created_at": row[14],
-        "dataset_version": row[15],
-        "valid_pixels": row[16],
-        "nominal_pixels_estimate": row[17],
-        "estimated_coverage_pct": row[18],
-        "insufficient_reason": row[19],
-        "treecover_reason": row[20],
-        "build_version": row[21]
+        "dataset_version": row[15], "valid_pixels": row[16],
+        "nominal_pixels_estimate": row[17], "estimated_coverage_pct": row[18],
+        "insufficient_reason": row[19], "treecover_reason": row[20], "build_version": row[21]
     }
