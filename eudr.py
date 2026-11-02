@@ -13,7 +13,7 @@ from pyproj import Geod
 DB_PATH = "eudr.db"
 GFW_API_KEY = os.getenv("GFW_API_KEY")
 DATASET_VERSION = "Hansen Global Forest Change 2025 v1.13 (2000-2025)"
-TDM_SCREENING_THRESHOLD_PCT = 10.0  # Contrôle qualité interne expérimental (non-réglementaire)
+TDM_SCREENING_THRESHOLD_PCT = 5.0  # <-- BAISSÉ À 5% SELON TA DEMANDE
 
 # ========== BUILD IDENTIFIER ==========
 _BUILD_COMMIT = os.getenv("RENDER_GIT_COMMIT", "dev-local")
@@ -144,6 +144,19 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
     if not EE_INITIALIZED:
         return None
 
+    # INITIALISATION DES VARIABLES POUR ÉVITER LE BUG UnboundLocalError
+    hist_insufficient = False
+    hist_reason = None
+    loss_percentage = -1
+    last_loss_year = -1
+    loss_insufficient = False
+    pixel_error_reason = None
+    valid_pixels = None
+    estimated_coverage_pct = None
+    nominal_pixels_estimate = None
+    treecover_reason = None
+    tree_cover_mean_ee = -1
+
     try:
         if polygon and len(polygon) >= 3:
             geometry = ee.Geometry.Polygon(polygon)
@@ -168,31 +181,23 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         
         if treecover_val is None or not math.isfinite(treecover_val) or treecover_val < 0:
             tree_cover_mean_ee = -1
-            tc_insufficient = True
             treecover_reason = "TREECOVER_UNAVAILABLE"
         else:
             tree_cover_mean_ee = int(round(treecover_val))
-            tc_insufficient = False
             treecover_reason = None
 
         valid_pixels_raw = lossyear.reduceRegion(
             reducer=ee.Reducer.count().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
         ).get('lossyear').getInfo()
 
-        nominal_pixels_estimate = None
-        estimated_coverage_pct = None
         if area_ha is not None and area_ha > 0:
             nominal_pixels_estimate = round((area_ha * 10000) / 900)
 
-        # CORRECTIF : Si 0 pixel de perte, on considère que c'est 0% de perte
         if not isinstance(valid_pixels_raw, (int, float)) or valid_pixels_raw == 0:
             loss_insufficient = False
-            valid_pixels = 1  # Faux positif pour éviter la division par zéro
-            pixel_error_reason = None
+            valid_pixels = 1  
             loss_percentage = 0.0
             last_loss_year = 0
-            hist_insufficient = False
-            hist_reason = None
         else:
             if abs(valid_pixels_raw - round(valid_pixels_raw)) > 1e-6:
                 print(f"⚠️ EE: valid_pixels non entier reçu : {valid_pixels_raw}")
@@ -204,58 +209,58 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
                 loss_insufficient = False
                 pixel_error_reason = None
 
-            if not loss_insufficient:
-                if nominal_pixels_estimate > 0:
-                    estimated_coverage_pct = round((valid_pixels / nominal_pixels_estimate) * 100, 2)
+        if not loss_insufficient:
+            if nominal_pixels_estimate > 0:
+                estimated_coverage_pct = round((valid_pixels / nominal_pixels_estimate) * 100, 2)
 
-                loss_hist = lossyear.reduceRegion(
-                    reducer=ee.Reducer.frequencyHistogram().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
-                ).get('lossyear').getInfo()
+            loss_hist = lossyear.reduceRegion(
+                reducer=ee.Reducer.frequencyHistogram().unweighted(), geometry=geometry, scale=30, maxPixels=1e9
+            ).get('lossyear').getInfo()
 
-                if loss_hist is None or (isinstance(loss_hist, dict) and not loss_hist):
-                    hist_insufficient = False
-                    loss_percentage = 0.0
-                    last_loss_year = 0
-                elif not isinstance(loss_hist, dict):
-                    hist_insufficient = True
-                    hist_reason = "HISTOGRAM_INVALID_TYPE"
-                else:
-                    try:
-                        histogram_pixels = 0
-                        post_2020_pixels = 0
-                        last_loss_year_idx = 0
+            if loss_hist is None or (isinstance(loss_hist, dict) and not loss_hist):
+                hist_insufficient = False
+                loss_percentage = 0.0
+                last_loss_year = 0
+            elif not isinstance(loss_hist, dict):
+                hist_insufficient = True
+                hist_reason = "HISTOGRAM_INVALID_TYPE"
+            else:
+                try:
+                    histogram_pixels = 0
+                    post_2020_pixels = 0
+                    last_loss_year_idx = 0
 
-                        for year_str, count in loss_hist.items():
-                            count_float = float(count)
-                            if not math.isfinite(count_float) or count_float < 0:
-                                raise ValueError("INVALID_COUNT")
-                            
-                            if year_str is None or str(year_str).strip().lower() in ("null", "none", ""):
-                                continue
-                            
-                            year_int = int(year_str)
-                            if year_int < 0 or year_int > 25:
-                                raise ValueError("INVALID_YEAR")
-                            
-                            histogram_pixels += count_float
-                            if year_int > 20:
-                                post_2020_pixels += count_float
-                            if year_int > last_loss_year_idx:
-                                last_loss_year_idx = year_int
-
-                        if not math.isfinite(histogram_pixels) or histogram_pixels <= 0 or abs(histogram_pixels - valid_pixels) > 0.01:
-                            raise ValueError("HISTOGRAM_MISMATCH")
-
-                        loss_percentage = (post_2020_pixels / valid_pixels * 100)
-                        if not math.isfinite(loss_percentage) or loss_percentage < 0 or loss_percentage > 100:
-                            raise ValueError("INVALID_PERCENTAGE")
+                    for year_str, count in loss_hist.items():
+                        count_float = float(count)
+                        if not math.isfinite(count_float) or count_float < 0:
+                            raise ValueError("INVALID_COUNT")
                         
-                        last_loss_year = 2000 + last_loss_year_idx if last_loss_year_idx > 0 else 0
+                        if year_str is None or str(year_str).strip().lower() in ("null", "none", ""):
+                            continue
+                        
+                        year_int = int(year_str)
+                        if year_int < 0 or year_int > 25:
+                            raise ValueError("INVALID_YEAR")
+                        
+                        histogram_pixels += count_float
+                        if year_int > 20:
+                            post_2020_pixels += count_float
+                        if year_int > last_loss_year_idx:
+                            last_loss_year_idx = year_int
 
-                    except (TypeError, ValueError) as e:
-                        hist_insufficient = True
-                        hist_reason = str(e) if str(e) in ["NULL_BUCKET", "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE", "INVALID_YEAR", "INVALID_COUNT"] else "INVALID_DATA"
-                        print(f"⚠️ EE: Erreur histogramme : {hist_reason}")
+                    if not math.isfinite(histogram_pixels) or histogram_pixels <= 0 or abs(histogram_pixels - valid_pixels) > 0.01:
+                        raise ValueError("HISTOGRAM_MISMATCH")
+
+                    loss_percentage = (post_2020_pixels / valid_pixels * 100)
+                    if not math.isfinite(loss_percentage) or loss_percentage < 0 or loss_percentage > 100:
+                        raise ValueError("INVALID_PERCENTAGE")
+                    
+                    last_loss_year = 2000 + last_loss_year_idx if last_loss_year_idx > 0 else 0
+
+                except (TypeError, ValueError) as e:
+                    hist_insufficient = True
+                    hist_reason = str(e) if str(e) in ["NULL_BUCKET", "HISTOGRAM_MISMATCH", "INVALID_PERCENTAGE", "INVALID_YEAR", "INVALID_COUNT"] else "INVALID_DATA"
+                    print(f"⚠️ EE: Erreur histogramme : {hist_reason}")
 
         is_loss_insufficient = loss_insufficient or hist_insufficient
         
@@ -306,7 +311,7 @@ def compute_risk(lat: float, lon: float, polygon=None):
                 "tree_cover_mean_ee": result["tree_cover_mean_ee"], "tree_cover_gfw_2000": None,
                 "valid_pixels": result["valid_pixels"], "nominal_pixels_estimate": result["nominal_pixels_estimate"], 
                 "estimated_coverage_pct": coverage, 
-                "insufficient_reason": "COVERAGE_BELOW_10_PCT", 
+                "insufficient_reason": "COVERAGE_BELOW_5_PCT", 
                 "treecover_reason": result["treecover_reason"]
             }
 
