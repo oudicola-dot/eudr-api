@@ -5,25 +5,71 @@ import sqlite3
 import os
 import math
 
+
 class TestEUDRLogic(unittest.TestCase):
-    
+
     # --- Tests sur compute_risk_ee (Calcul brut) ---
-    
+
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
-    def test_histogram_empty(self, mock_ee):
-        # On mock la surface (area) pour éviter le crash
+    def test_histogram_empty_with_valid_pixels_is_inconclusive(self, mock_ee):
         mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
-        # On mock les 3 appels de getInfo (treecover, valid_pixels, loss_hist)
-        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {}]
+        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [
+            80,       # treecover
+            1000,     # mask sum
+            1000,     # unmasked count
+            1000,     # zero count
+            0,        # positive count
+            {}        # empty histogram
+        ]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
+        self.assertEqual(res["insufficient_reason"], "HISTOGRAM_EMPTY_WITH_VALID_PIXELS")
+
+    @patch('eudr.EE_INITIALIZED', True)
+    @patch('eudr.ee')
+    def test_zero_valid_pixels_is_inconclusive(self, mock_ee):
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
+        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [
+            80,       # treecover
+            0,        # mask sum
+            0,        # unmasked count
+            0,        # zero count
+            0,        # positive count
+        ]
+        res = eudr.compute_risk_ee(4.5, -74.2)
+        self.assertTrue(res["insufficient_data"])
+        self.assertEqual(res["insufficient_reason"], "NO_VALID_LOSS_PIXELS")
+
+    @patch('eudr.EE_INITIALIZED', True)
+    @patch('eudr.ee')
+    def test_valid_pixels_with_zero_loss_histogram(self, mock_ee):
+        mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
+        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [
+            80,          # treecover
+            1000,        # mask sum
+            1000,        # unmasked count
+            1000,        # zero count
+            0,           # positive count
+            {'0': 1000}  # histogram avec classe zéro
+        ]
+        res = eudr.compute_risk_ee(4.5, -74.2)
+        self.assertFalse(res["insufficient_data"])
+        self.assertEqual(res["loss_percentage"], 0.0)
+        self.assertEqual(res["last_loss_year"], 0)
 
     @patch('eudr.EE_INITIALIZED', True)
     @patch('eudr.ee')
     def test_histogram_mismatch(self, mock_ee):
         mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
-        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 500}]
+        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [
+            80,       # treecover
+            1000,     # mask sum
+            1000,     # unmasked count
+            1000,     # zero count
+            0,        # positive count
+            {'0': 500}  # histogram (mismatch: 500 != 1000)
+        ]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
 
@@ -31,7 +77,14 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.ee')
     def test_histogram_nan(self, mock_ee):
         mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
-        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 1000, '22': float('nan')}]
+        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [
+            80,       # treecover
+            1000,     # mask sum
+            1000,     # unmasked count
+            1000,     # zero count
+            0,        # positive count
+            {'0': 1000, '22': float('nan')}  # histogram with NaN
+        ]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
 
@@ -39,7 +92,14 @@ class TestEUDRLogic(unittest.TestCase):
     @patch('eudr.ee')
     def test_histogram_invalid_year(self, mock_ee):
         mock_ee.Geometry.Point.return_value.buffer.return_value.area.return_value.getInfo.return_value = 10000
-        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [80, 1000, {'0': 900, '99': 100}]
+        mock_ee.Image.return_value.select.return_value.reduceRegion.return_value.get.return_value.getInfo.side_effect = [
+            80,       # treecover
+            1000,     # mask sum
+            1000,     # unmasked count
+            1000,     # zero count
+            0,        # positive count
+            {'0': 900, '99': 100}  # histogram with invalid year 99
+        ]
         res = eudr.compute_risk_ee(4.5, -74.2)
         self.assertTrue(res["insufficient_data"])
 
@@ -51,10 +111,10 @@ class TestEUDRLogic(unittest.TestCase):
         for val in invalid_values:
             with self.subTest(val=val):
                 mock_ee.return_value = {
-                    "tree_cover_mean_ee": 50, 
-                    "loss_percentage": val, 
-                    "last_loss_year": 0, 
-                    "source": "ee", 
+                    "tree_cover_mean_ee": 50,
+                    "loss_percentage": val,
+                    "last_loss_year": 0,
+                    "source": "ee",
                     "insufficient_data": False,
                     "estimated_coverage_pct": 100.0,
                     "valid_pixels": 100,
@@ -77,10 +137,10 @@ class TestEUDRLogic(unittest.TestCase):
         for loss_pct, expected_status, expected_level in test_cases:
             with self.subTest(loss_pct=loss_pct):
                 mock_ee.return_value = {
-                    "tree_cover_mean_ee": 50, 
-                    "loss_percentage": loss_pct, 
-                    "last_loss_year": 2022, 
-                    "source": "ee", 
+                    "tree_cover_mean_ee": 50,
+                    "loss_percentage": loss_pct,
+                    "last_loss_year": 2022,
+                    "source": "ee",
                     "insufficient_data": False,
                     "estimated_coverage_pct": 100.0,
                     "valid_pixels": 100,
@@ -115,12 +175,12 @@ class TestEUDRLogic(unittest.TestCase):
             eudr.init_db()
             with patch('eudr.compute_risk') as mock_risk:
                 mock_risk.return_value = {
-                    "risk_score": 50, 
-                    "risk_level": "MEDIUM", 
+                    "risk_score": 50,
+                    "risk_level": "MEDIUM",
                     "eudr_status": "POTENTIAL LOSS SIGNAL",
-                    "tree_cover": 80, 
-                    "loss_year": 2022, 
-                    "source": "ee", 
+                    "tree_cover": 80,
+                    "loss_year": 2022,
+                    "source": "ee",
                     "dataset_version": "TEST_V1",
                     "valid_pixels": 100,
                     "nominal_pixels_estimate": 100,
@@ -133,6 +193,7 @@ class TestEUDRLogic(unittest.TestCase):
                 read_audit = eudr.get_audit(audit["audit_id"])
                 self.assertEqual(read_audit["dataset_version"], "TEST_V1")
         if os.path.exists(test_db): os.remove(test_db)
+
 
 if __name__ == '__main__':
     unittest.main()
