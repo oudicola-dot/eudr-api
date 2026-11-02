@@ -18,7 +18,6 @@ from shapely.geometry import Polygon
 app = FastAPI(title="TDM Territorial Screening API", version="3.9")
 
 def get_real_ip(request: Request):
-    # Fallback sur request.client.host. Le rate limiting est une protection "best-effort".
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -133,7 +132,6 @@ async def eudr_check(request: Request, payload: dict):
 
         polygon = valid_poly
 
-        # TEMPORARY DIAGNOSTIC — do not remove existing validation
         print("=== TDM POLYGON COORDINATE CHECK ===")
         print(f"Farm latitude: {lat}")
         print(f"Farm longitude: {lon}")
@@ -150,17 +148,11 @@ async def eudr_check(request: Request, payload: dict):
     audit_id = audit["audit_id"]
     signature = audit["signature"]
 
-    # ==========================================
-    # MODIFICATION 1 : On récupère le preset
-    # ==========================================
-    # On lit le choix de l'utilisateur (par défaut "standard" s'il n'y a rien)
     preset_choice = payload.get("image_preset", "standard")
 
     sha = hashlib.sha256(f"{audit_id}{name}{lat}{lon}".encode()).hexdigest()
     audit["partial_checksum"] = sha
     audit["verify_url"] = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
-    
-    # On ajoute le preset dans l'URL de téléchargement
     audit["pdf_url"] = f"{BASE_URL}/download/{audit_id}?signature={signature}&preset={preset_choice}"
     return audit
 
@@ -177,16 +169,30 @@ def verify_audit(request: Request, audit_id: str, signature: str):
     sha = hashlib.sha256(f"{audit['audit_id']}{audit['farm_name']}{audit['latitude']}{audit['longitude']}".encode()).hexdigest()
 
     source_label = "Earth Engine (Hansen)" if audit.get("source") == "ee" else "GFW" if audit.get("source") == "gfw" else "Analysis unavailable"
-    screening_status = html.escape(str(audit.get('eudr_status', 'UNKNOWN')))
+    
+    # Récupération stricte
+    raw_status_val = audit.get("eudr_status")
+    if isinstance(raw_status_val, str) and raw_status_val.strip():
+        raw_status = raw_status_val.strip()
+    else:
+        raw_status = "UNKNOWN"
+
+    display_status = (
+        "SCREENING INCONCLUSIVE"
+        if raw_status == "INSUFFICIENT DATA"
+        else raw_status
+    )
+    screening_status = html.escape(display_status)
     
     status_colors = {
         "NO POST-2020 LOSS DETECTED": "#00ff99",
         "BELOW TDM SCREENING THRESHOLD": "#ffaa00",
         "POTENTIAL LOSS SIGNAL": "#ff3333",
         "INSUFFICIENT DATA": "#aaaaaa",
+        "SCREENING INCONCLUSIVE": "#aaaaaa",
         "ANALYSIS UNAVAILABLE": "#aaaaaa"
     }
-    status_color = status_colors.get(screening_status, "#aaaaaa")
+    status_color = status_colors.get(display_status, "#aaaaaa")
 
     safe_id = html.escape(audit_id)
     safe_name = html.escape(str(audit['farm_name']))
@@ -214,6 +220,7 @@ def verify_audit(request: Request, audit_id: str, signature: str):
             <p><b>Loss Year:</b> {safe_ly}</p>
             <p><b>Risk:</b> {safe_level} ({safe_risk})</p>
             <p><b>Screening Status:</b> <span style="color:{status_color};"><b>{screening_status}</b></span></p>
+            {f"<p style='font-size:12px;color:#aaaaaa;'><i>Available geospatial observations were insufficient to establish a reliable forest-loss assessment. This result does not indicate zero forest loss or establish EUDR compliance. Additional verification required.</i></p>" if raw_status == "INSUFFICIENT DATA" else ""}
             <p><b>Data Source:</b> {source_label}</p>
             <p><b>Dataset:</b> {safe_dataset}</p>
             <hr>
@@ -231,9 +238,6 @@ def cleanup_file(path: str):
     except Exception:
         pass
 
-# ==========================================
-# MODIFICATION 2 : Acceptation du preset ici
-# ==========================================
 @app.get("/download/{audit_id}")
 @limiter.limit("10/minute")
 async def download_pdf(request: Request, background_tasks: BackgroundTasks, audit_id: str, signature: str, preset: str = "standard"):
@@ -251,7 +255,7 @@ async def download_pdf(request: Request, background_tasks: BackgroundTasks, audi
             risk_score=audit["risk_score"], risk_level=audit["risk_level"], eudr_status=audit["eudr_status"],
             tree_cover=audit.get("tree_cover", -1), loss_year=audit.get("loss_year", -1),
             source=audit.get("source", "unknown"), polygon_points=audit.get("polygon_points"), dataset_version=audit.get("dataset_version", "Unknown"),
-            image_preset=preset  # <--- MODIFICATION ICI : On transmet le preset au PDF
+            image_preset=preset
         )
         
         background_tasks.add_task(cleanup_file, file_path)
