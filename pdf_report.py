@@ -489,10 +489,16 @@ def generate_parcel_map(polygon_points, path, buffer_m=250, image_size=(1400, 85
         return path, info, None
     except Exception: return None, None, "Save failed"
 
-def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_size=(1800, 1100)):
+def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_size=(1800, 1100), manual_places=None):
     img, info, bounds, error = _fetch_satellite_image(polygon_points, buffer_m, image_size)
     if img is None: return None, None, error
+    
     places = fetch_osm_places(lat, lon, radius_m=3000)
+    
+    # [MODIFICATION] On ajoute le nom trouvé par Nominatim à la liste des lieux à dessiner
+    if manual_places:
+        places.extend(manual_places)
+        
     try:
         _draw_common(img, polygon_points, bounds, scale_m=1000, places=places, font_size=32)
         img.convert("RGB").save(path, format="PNG")
@@ -752,8 +758,22 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(Paragraph(t("territorial_context"), styles["TDMSection"]))
         content.append(Spacer(1, 0.3 * cm))
 
+        terr_context = get_territorial_context(lat, lon) if lat is not None and lon is not None else None
+        
+        # [MODIFICATION] On prépare le nom de la ville pour la carte
+        manual_places = []
+        if terr_context:
+            display_name = terr_context.get("place_name") or terr_context.get("town_name") or terr_context.get("city_name") or terr_context.get("municipality_name")
+            if display_name:
+                manual_places.append({"name": display_name, "lat": lat, "lon": lon, "type": "town"})
+
         if map_poly and lat is not None and lon is not None:
-            context_map, context_info, context_err = generate_context_map(map_poly, lat, lon, context_path, buffer_m=preset["context_buffer_m"], image_size=preset["context_size"])
+            context_map, context_info, context_err = generate_context_map(
+                map_poly, lat, lon, context_path, 
+                buffer_m=preset["context_buffer_m"], 
+                image_size=preset["context_size"],
+                manual_places=manual_places
+            )
         else:
             context_map, context_info, context_err = None, None, t("err_no_coords")
 
@@ -770,7 +790,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         else:
             content.append(Paragraph(f"<i>{t('map_unavailable')} ({html.escape(context_err or 'unavailable')}).</i>", styles["TDMValue"]))
 
-        terr_context = get_territorial_context(lat, lon) if lat is not None and lon is not None else None
         if terr_context:
             parts = []
             if terr_context.get("place_name"): parts.append(f"{t('osm_place')}: {html.escape(terr_context['place_name'])}")
