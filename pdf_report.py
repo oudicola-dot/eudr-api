@@ -3,7 +3,7 @@ import io
 import html
 import math
 import uuid
-import time  # [NOMINATIM] pour rate-limit et budget
+import time
 import qrcode
 import requests
 
@@ -23,9 +23,6 @@ from pyproj import Geod, Transformer
 from eudr import get_audit
 import eudr
 
-# ==========================================
-# DÉPENDANCES OPTIONNELLES
-# ==========================================
 try:
     from PIL import Image as PILImage, ImageDraw, ImageFont
     HAS_PIL = True
@@ -40,9 +37,6 @@ except ImportError:
     print("⚠️ earthengine-api non importable.")
     HAS_EE = False
 
-# ==========================================
-# CONFIGURATION
-# ==========================================
 BASE_URL = os.getenv("BASE_URL", "https://eudr-api-mi0x.onrender.com")
 LOGO_URL = "https://tierrasdemontana.com/wp-content/uploads/2021/03/TDM-L.png"
 EXPECTED_DATASET = "Hansen Global Forest Change 2025 v1.13 (2000-2025)"
@@ -54,9 +48,6 @@ TDM_GRAY = colors.HexColor("#F5F5F5")
 
 _EE_CONFIRMED = False
 
-# ==========================================
-# NOMINATIM — CACHE, RATE-LIMIT, BUDGET
-# ==========================================
 _nominatim_cache_positive = {}   
 _nominatim_cache_blocked = set() 
 _nominatim_last_call = [0.0]
@@ -70,9 +61,6 @@ def _nominatim_rate_limit():
         time.sleep(_NOMINATIM_MIN_INTERVAL_S - elapsed)
     _nominatim_last_call[0] = time.monotonic()
 
-# ==========================================
-# DICTIONNAIRE ANGLAIS (Centralisation)
-# ==========================================
 EN = {
     "title": "EUDR TERRITORIAL TRACEABILITY<br/>&amp; DUE DILIGENCE SUPPORT REPORT",
     "report_id": "Report ID",
@@ -138,9 +126,6 @@ EN = {
 def t(key):
     return EN.get(key, key)
 
-# ==========================================
-# PRESETS DE CADRAGE SATELLITE
-# ==========================================
 IMAGE_PRESETS = {
     "standard": {"parcel_buffer_m": 300, "parcel_size": (1200, 800), "context_buffer_m": 2500, "context_size": (1200, 800)},
     "zoom": {"parcel_buffer_m": 150, "parcel_size": (1000, 700), "context_buffer_m": 1500, "context_size": (1200, 800)},
@@ -151,9 +136,6 @@ DEFAULT_PRESET = "standard"
 def resolve_preset(name):
     return IMAGE_PRESETS.get(name) or IMAGE_PRESETS[DEFAULT_PRESET]
 
-# ==========================================
-# LOGO & STYLES
-# ==========================================
 def get_logo():
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
@@ -179,9 +161,6 @@ def get_custom_styles():
     styles.add(ParagraphStyle(name="TDMDisclaimer", parent=styles["Normal"], fontSize=8, textColor=TDM_GREEN, fontName="Helvetica-Bold", alignment=TA_CENTER))
     return styles
 
-# ==========================================
-# FORMATAGE & CALCULS
-# ==========================================
 def format_val(val, suffix="", min_val=0, max_val=100):
     if (isinstance(val, bool) or val is None or not isinstance(val, (int, float)) or math.isnan(val) or math.isinf(val) or val < min_val or val > max_val): return "N/A"
     return f"{val}{suffix}"
@@ -213,9 +192,6 @@ def calculate_geometry(polygon_points):
         return f"{centroid.y:.6f}, {centroid.x:.6f}", f"{abs(area_sq_m) / 10000.0:.2f} ha"
     except Exception: return "Calculation error", "N/A"
 
-# ==========================================
-# OUTILS CARTOGRAPHIQUES
-# ==========================================
 def _init_ee():
     global _EE_CONFIRMED
     if not HAS_PIL or not HAS_EE: return False
@@ -429,7 +405,6 @@ def _nice_scale(max_m):
         if mult * (10 ** exp) <= max_m: return int(mult * (10 ** exp))
     return int(10 ** (exp - 1)) if exp > 0 else 1
 
-# [MODIFICATION] Ajout du paramètre font_size
 def _draw_common(img, polygon_points, bounds, scale_m, places=None, font_size=13):
     draw = ImageDraw.Draw(img)
     img_w, img_h = img.size
@@ -442,7 +417,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None, font_size=13
         return ((x - min_x) / (max_x - min_x) * img_w, (max_y - y) / (max_y - min_y) * img_h)
 
     if places:
-        # Utilisation de la taille de police fournie
         try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
         except Exception: font = ImageFont.load_default()
         
@@ -455,7 +429,6 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None, font_size=13
         visible.sort(key=lambda p: {"city": 0, "town": 1, "village": 2}.get(p.get("type"), 3))
         type_colors = {"city": "#FFD700", "town": "#FFA500", "village": "#FFFFFF"}
         
-        # [MODIFICATION] Points et contour plus gros si la police est grande
         if font_size > 20:
             type_sizes = {"city": 12, "town": 10, "village": 8}
             stroke_w = 3
@@ -521,15 +494,11 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
     if img is None: return None, None, error
     places = fetch_osm_places(lat, lon, radius_m=3000)
     try:
-        # [MODIFICATION] On force font_size=32 pour la 2ème carte
         _draw_common(img, polygon_points, bounds, scale_m=1000, places=places, font_size=32)
         img.convert("RGB").save(path, format="PNG")
         return path, info, None
     except Exception: return None, None, "Save failed"
 
-# ==========================================
-# GÉNÉRATION PDF
-# ==========================================
 def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_status, tree_cover, loss_year, source="unknown", polygon_points=None, dataset_version="Unknown", image_preset=DEFAULT_PRESET, **kwargs):
     preset = resolve_preset(image_preset)
     temp_id = uuid.uuid4().hex
