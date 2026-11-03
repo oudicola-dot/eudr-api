@@ -3,6 +3,7 @@ import io
 import html
 import math
 import uuid
+import time  # [NOMINATIM] pour rate-limit et budget
 import qrcode
 import requests
 
@@ -54,6 +55,25 @@ TDM_GRAY = colors.HexColor("#F5F5F5")
 _EE_CONFIRMED = False
 
 # ==========================================
+# NOMINATIM — CACHE, RATE-LIMIT, BUDGET
+# ==========================================
+# [NOMINATIM] État module-level, partagé entre appels dans un même worker.
+# Précision 5 décimales (~1,1 m) pour éviter de confondre deux hameaux voisins.
+_nominatim_cache_positive = {}   # clé -> dict
+_nominatim_cache_blocked = set() # clés avec 403 persistant
+_nominatim_last_call = [0.0]
+_NOMINATIM_MIN_INTERVAL_S = 1.0   # 1 req/s par worker (politique Nominatim)
+_NOMINATIM_GLOBAL_BUDGET_S = 20.0 # budget total pour une génération de PDF
+
+def _nominatim_rate_limit():
+    """Respecte 1 req/s par worker. Ne bloque pas entre deux workers (limite documentée)."""
+    now = time.monotonic()
+    elapsed = now - _nominatim_last_call[0]
+    if elapsed < _NOMINATIM_MIN_INTERVAL_S:
+        time.sleep(_NOMINATIM_MIN_INTERVAL_S - elapsed)
+    _nominatim_last_call[0] = time.monotonic()
+
+# ==========================================
 # DICTIONNAIRE ANGLAIS (Centralisation)
 # ==========================================
 EN = {
@@ -86,7 +106,8 @@ EN = {
     "method_note": "Methodological note: Hansen v1.13 includes methodological reprocessing of forest-loss data from 2011 onward. Comparisons between observations before and after 2011 should therefore be interpreted with care.",
     "screening_note": "Interpretation: Hansen forest-loss observations are screening indicators. They do not independently establish a legal determination of deforestation under the EUDR.",
     "metrics_title": "Screening Quality & Coverage Metrics",
-    "coverage": "Estimated Coverage",
+    # [COVERAGE] Renommage : la formule mesure un ratio de pixels valides, pas une couverture géographique.
+    "coverage": "Valid Pixel Ratio<br/>(observed / theoretical)",
     "valid_pixels": "Valid Pixels",
     "nominal_pixels": "Nominal Pixels (Estimate)",
     "insufficient_reason": "Insufficiency Reason",
@@ -106,7 +127,8 @@ EN = {
     "lon": "Longitude",
     "limited_obs_title": "SCREENING INCONCLUSIVE — Limited Valid Observations",
     "limited_obs_text": "The available geospatial observations were insufficient to establish a reliable forest-loss assessment for this parcel.<br/><br/>This result does not indicate zero forest loss, nor does it establish EUDR compliance. <b>Territorial assessment — Additional verification required.</b>",
-    "limited_obs_note": "<i>Note: The 'Estimated Coverage' indicates the proportion of the parcel area for which valid Hansen observations exist. It is not a measure of the forest-loss rate. The 5% threshold is an internal TDM data-quality control, not an EUDR regulatory threshold.</i>",
+    # [COVERAGE] Note alignée sur le nouveau libellé.
+    "limited_obs_note": "<i>Note: The Valid Pixel Ratio indicates the relative number of valid Hansen observations for this parcel compared to a theoretical estimate. It is not a measure of geographic coverage or forest-loss rate. The 5% threshold is an internal TDM data-quality control, not an EUDR regulatory threshold.</i>",
     "osm_place": "OSM Place",
     "osm_town": "OSM Town",
     "osm_city": "OSM City",
@@ -210,20 +232,106 @@ def _init_ee():
         return True
     except Exception: return False
 
+# [NOMINATIM] Fonction réécrite : cache 5 décimales, rate-limit, budget, retry,
+# Retry-After respecté sans cap arbitraire, logs [nominatim].
 def get_territorial_context(lat, lon):
     try:
-        headers = {"User-Agent": "TDM-EUDR-Screening/1.0 (+https://tierrasdemontana.com)"}
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=14&addressdetails=1"
-        r = requests.get(url, headers=headers, timeout=5)
-        if r.status_code != 200: return None
-        address = r.json().get("address", {})
-        place_name = next((address[k] for k in ("village", "hamlet", "locality", "suburb", "neighbourhood") if address.get(k)), None)
-        return {
-            "place_name": place_name, "town_name": address.get("town"), "city_name": address.get("city"),
-            "municipality_name": address.get("municipality"), "region": (address.get("state") or address.get("province") or address.get("region")),
-            "country": address.get("country"),
-        }
-    except Exception: return None
+        key = (round(float(lat), 5), round(float(lon), 5))
+    except (TypeError, ValueError):
+        print("[nominatim] key=invalid state=invalid_input")
+        return None
+
+    # 1. Cache positif
+    if key in _nominatim_cache_positive:
+        print(f"[nominatim] key={key} state=positive cache_hit=True")
+        return _nominatim_cache_positive[key]
+
+    # 2. Échec persistant déjà observé (403)
+    if key in _nominatim_cache_blocked:
+        print(f"[nominatim] key={key} state=blocked cache_hit=True")
+        return None
+
+    # 3. Appels réseau avec budget global
+    headers = {"User-Agent": "TDM-EUDR-Screening/1.0 (+https://tierrasdemontana.com)"}
+    url = (
+        f"https://nominatim.openstreetmap.org/reverse"
+        f"?format=json&lat={lat}&lon={lon}&zoom=14&addressdetails=1"
+    )
+    start = time.monotonic()
+
+    for attempt in (1, 2):
+        elapsed = time.monotonic() - start
+        if elapsed >= _NOMINATIM_GLOBAL_BUDGET_S:
+            print(f"[nominatim] key={key} budget_exceeded elapsed={elapsed:.1f}s")
+            return None
+
+        _nominatim_rate_limit()
+
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+        except requests.Timeout:
+            print(f"[nominatim] key={key} attempt={attempt} state=timeout")
+            continue
+        except Exception as e:
+            print(f"[nominatim] key={key} attempt={attempt} state=exception type={type(e).__name__}")
+            return None
+
+        if r.status_code == 200:
+            try:
+                address = r.json().get("address", {})
+            except Exception:
+                print(f"[nominatim] key={key} attempt={attempt} state=invalid_json")
+                return None
+
+            if not address:
+                # Résultat vide : non caché, retenté à un prochain appel.
+                print(f"[nominatim] key={key} attempt={attempt} state=empty cache_hit=False")
+                return None
+
+            place_name = next(
+                (address[k] for k in ("village", "hamlet", "locality", "suburb", "neighbourhood") if address.get(k)),
+                None,
+            )
+            data = {
+                "place_name": place_name,
+                "town_name": address.get("town"),
+                "city_name": address.get("city"),
+                "municipality_name": address.get("municipality"),
+                "region": (address.get("state") or address.get("province") or address.get("region")),
+                "country": address.get("country"),
+            }
+            _nominatim_cache_positive[key] = data
+            print(f"[nominatim] key={key} attempt={attempt} state=positive cache_hit=False")
+            return data
+
+        if r.status_code == 403:
+            _nominatim_cache_blocked.add(key)
+            print(f"[nominatim] key={key} attempt={attempt} state=blocked_403")
+            return None
+
+        if r.status_code == 429:
+            ra_header = r.headers.get("Retry-After")
+            try:
+                retry_after = int(ra_header) if ra_header is not None else 2
+            except (TypeError, ValueError):
+                retry_after = 2
+            remaining = _NOMINATIM_GLOBAL_BUDGET_S - (time.monotonic() - start)
+            # [NOMINATIM] Pas de cap arbitraire. Si le header demande plus que
+            # le budget restant, on n'attend pas : on abandonne proprement.
+            if retry_after > remaining:
+                print(f"[nominatim] key={key} attempt={attempt} state=429_abort retry_after={retry_after}s remaining={remaining:.1f}s")
+                return None
+            print(f"[nominatim] key={key} attempt={attempt} state=429_wait retry_after={retry_after}s")
+            if retry_after > 0:
+                time.sleep(retry_after)
+            continue
+
+        # Autre code HTTP (4xx/5xx) : non caché, non retenté dans cette exécution.
+        print(f"[nominatim] key={key} attempt={attempt} state=http_{r.status_code}")
+        return None
+
+    print(f"[nominatim] key={key} state=exhausted_attempts")
+    return None
 
 def fetch_osm_places(lat, lon, radius_m=3000):
     query = f'[out:json][timeout:8];(node["place"~"city|town|village"](around:{radius_m},{lat},{lon});way["place"~"city|town|village"](around:{radius_m},{lat},{lon});relation["place"~"city|town|village"](around:{radius_m},{lat},{lon}););out center;'
@@ -611,6 +719,20 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
             content.append(metrics_table)
             content.append(Spacer(1, 0.3 * cm))
 
+            # [COVERAGE] Note prudente, uniquement si le ratio dépasse 100%.
+            if (isinstance(coverage_pct, (int, float)) and not isinstance(coverage_pct, bool)
+                    and math.isfinite(coverage_pct) and coverage_pct > 100):
+                content.append(Paragraph(
+                    "<i>Note: the Valid Pixel Ratio compares observed Hansen pixels to a theoretical "
+                    "estimate (polygon area ÷ 900 m²). Values above 100% may occur on small parcels "
+                    "due to raster grid discretization (30 m cells do not align exactly with polygon "
+                    "edges) and to differences between Earth Engine's area computation and the area "
+                    "displayed in this report. This ratio indicates data availability, not geographic "
+                    "coverage or EUDR compliance.</i>",
+                    styles["TDMLegal"]
+                ))
+                content.append(Spacer(1, 0.2 * cm))
+
             if insufficient_reason:
                 content.append(Paragraph(f"<b>{t('insufficient_reason')}:</b> {html.escape(str(insufficient_reason))}", styles["TDMValue"]))
             
@@ -676,6 +798,15 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
                 content.append(Spacer(1, 0.3 * cm))
                 content.append(Paragraph("<br/>".join(parts), styles["TDMValue"]))
                 content.append(Paragraph(f"<font size='7' color='#888888'>{t('source_nominatim')}</font>", styles["TDMLegal"]))
+        else:
+            # [FALLBACK] Formulation neutre, sans attribuer de cause.
+            content.append(Spacer(1, 0.3 * cm))
+            content.append(Paragraph(
+                "Territorial context could not be retrieved during report generation. "
+                "The geographic coordinates and polygon are retained. "
+                "No territorial identification is inferred.",
+                styles["TDMLegal"]
+            ))
 
         content.append(Spacer(1, 0.5 * cm))
         content.append(Paragraph(f"{t('verify_at')}: {html.escape(verify_url)}", styles["TDMLegal"]))
