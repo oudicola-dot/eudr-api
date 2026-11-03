@@ -19,7 +19,7 @@ from reportlab.lib.enums import TA_CENTER
 
 from security import sign_audit
 from shapely.geometry import Polygon
-from pyproj import Geod
+from pyproj import Geod, Transformer # [MODIFICATION] Ajout de Transformer
 from eudr import get_audit
 import eudr
 
@@ -57,16 +57,13 @@ _EE_CONFIRMED = False
 # ==========================================
 # NOMINATIM — CACHE, RATE-LIMIT, BUDGET
 # ==========================================
-# [NOMINATIM] État module-level, partagé entre appels dans un même worker.
-# Précision 5 décimales (~1,1 m) pour éviter de confondre deux hameaux voisins.
-_nominatim_cache_positive = {}   # clé -> dict
-_nominatim_cache_blocked = set() # clés avec 403 persistant
+_nominatim_cache_positive = {}   
+_nominatim_cache_blocked = set() 
 _nominatim_last_call = [0.0]
-_NOMINATIM_MIN_INTERVAL_S = 1.0   # 1 req/s par worker (politique Nominatim)
-_NOMINATIM_GLOBAL_BUDGET_S = 20.0 # budget total pour une génération de PDF
+_NOMINATIM_MIN_INTERVAL_S = 1.0   
+_NOMINATIM_GLOBAL_BUDGET_S = 20.0 
 
 def _nominatim_rate_limit():
-    """Respecte 1 req/s par worker. Ne bloque pas entre deux workers (limite documentée)."""
     now = time.monotonic()
     elapsed = now - _nominatim_last_call[0]
     if elapsed < _NOMINATIM_MIN_INTERVAL_S:
@@ -106,7 +103,6 @@ EN = {
     "method_note": "Methodological note: Hansen v1.13 includes methodological reprocessing of forest-loss data from 2011 onward. Comparisons between observations before and after 2011 should therefore be interpreted with care.",
     "screening_note": "Interpretation: Hansen forest-loss observations are screening indicators. They do not independently establish a legal determination of deforestation under the EUDR.",
     "metrics_title": "Screening Quality & Coverage Metrics",
-    # [COVERAGE] Renommage : la formule mesure un ratio de pixels valides, pas une couverture géographique.
     "coverage": "Valid Pixel Ratio<br/>(observed / theoretical)",
     "valid_pixels": "Valid Pixels",
     "nominal_pixels": "Nominal Pixels (Estimate)",
@@ -127,7 +123,6 @@ EN = {
     "lon": "Longitude",
     "limited_obs_title": "SCREENING INCONCLUSIVE — Limited Valid Observations",
     "limited_obs_text": "The available geospatial observations were insufficient to establish a reliable forest-loss assessment for this parcel.<br/><br/>This result does not indicate zero forest loss, nor does it establish EUDR compliance. <b>Territorial assessment — Additional verification required.</b>",
-    # [COVERAGE] Note alignée sur le nouveau libellé.
     "limited_obs_note": "<i>Note: The Valid Pixel Ratio indicates the relative number of valid Hansen observations for this parcel compared to a theoretical estimate. It is not a measure of geographic coverage or forest-loss rate. The 5% threshold is an internal TDM data-quality control, not an EUDR regulatory threshold.</i>",
     "osm_place": "OSM Place",
     "osm_town": "OSM Town",
@@ -232,8 +227,6 @@ def _init_ee():
         return True
     except Exception: return False
 
-# [NOMINATIM] Fonction réécrite : cache 5 décimales, rate-limit, budget, retry,
-# Retry-After respecté sans cap arbitraire, logs [nominatim].
 def get_territorial_context(lat, lon):
     try:
         key = (round(float(lat), 5), round(float(lon), 5))
@@ -241,17 +234,14 @@ def get_territorial_context(lat, lon):
         print("[nominatim] key=invalid state=invalid_input")
         return None
 
-    # 1. Cache positif
     if key in _nominatim_cache_positive:
         print(f"[nominatim] key={key} state=positive cache_hit=True")
         return _nominatim_cache_positive[key]
 
-    # 2. Échec persistant déjà observé (403)
     if key in _nominatim_cache_blocked:
         print(f"[nominatim] key={key} state=blocked cache_hit=True")
         return None
 
-    # 3. Appels réseau avec budget global
     headers = {"User-Agent": "TDM-EUDR-Screening/1.0 (+https://tierrasdemontana.com)"}
     url = (
         f"https://nominatim.openstreetmap.org/reverse"
@@ -284,7 +274,6 @@ def get_territorial_context(lat, lon):
                 return None
 
             if not address:
-                # Résultat vide : non caché, retenté à un prochain appel.
                 print(f"[nominatim] key={key} attempt={attempt} state=empty cache_hit=False")
                 return None
 
@@ -316,8 +305,6 @@ def get_territorial_context(lat, lon):
             except (TypeError, ValueError):
                 retry_after = 2
             remaining = _NOMINATIM_GLOBAL_BUDGET_S - (time.monotonic() - start)
-            # [NOMINATIM] Pas de cap arbitraire. Si le header demande plus que
-            # le budget restant, on n'attend pas : on abandonne proprement.
             if retry_after > remaining:
                 print(f"[nominatim] key={key} attempt={attempt} state=429_abort retry_after={retry_after}s remaining={remaining:.1f}s")
                 return None
@@ -326,7 +313,6 @@ def get_territorial_context(lat, lon):
                 time.sleep(retry_after)
             continue
 
-        # Autre code HTTP (4xx/5xx) : non caché, non retenté dans cette exécution.
         print(f"[nominatim] key={key} attempt={attempt} state=http_{r.status_code}")
         return None
 
@@ -352,62 +338,76 @@ def fetch_osm_places(lat, lon, radius_m=3000):
         return unique
     except Exception: return []
 
+# [MODIFICATION 1] : Fonction mise à jour pour la projection 3857
 def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
     if not HAS_PIL or not polygon_points or len(polygon_points) < 3: return None, None, None, t("err_no_coords")
     try:
+        transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+        
         ring = [[float(p[0]), float(p[1])] for p in polygon_points]
         if ring[0] != ring[-1]: ring.append(ring[0])
-        poly = Polygon(ring)
-        min_lon, min_lat, max_lon, max_lat = poly.bounds
-        center_lat = (min_lat + max_lat) / 2.0
-        m_per_deg_lon = 111320.0 * math.cos(math.radians(center_lat))
-        m_per_deg_lat = 110540.0
-        delta_lon = buffer_m / m_per_deg_lon
-        delta_lat = buffer_m / m_per_deg_lat
-        min_lon -= delta_lon; max_lon += delta_lon
-        min_lat -= delta_lat; max_lat += delta_lat
+        
+        # Conversion de la géométrie en 3857 (mètres)
+        poly_3857 = [transformer.transform(lon, lat) for lon, lat in ring]
+        min_x = min(p[0] for p in poly_3857)
+        max_x = max(p[0] for p in poly_3857)
+        min_y = min(p[1] for p in poly_3857)
+        max_y = max(p[1] for p in poly_3857)
+        
+        # Application du buffer (en mètres)
+        min_x -= buffer_m
+        max_x += buffer_m
+        min_y -= buffer_m
+        max_y += buffer_m
+        
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        width_m = max_x - min_x
+        height_m = max_y - min_y
         target_aspect = image_size[0] / image_size[1]
-        width_m = max((max_lon - min_lon) * m_per_deg_lon, 1.0)
-        height_m = max((max_lat - min_lat) * m_per_deg_lat, 1.0)
+        
         min_size_m = 500.0
-        center_lon = (min_lon + max_lon) / 2.0
-        center_lat = (min_lat + max_lat) / 2.0
         if width_m < min_size_m:
-            delta_lon = (min_size_m / 2.0) / m_per_deg_lon
-            min_lon = center_lon - delta_lon
-            max_lon = center_lon + delta_lon
+            min_x = center_x - (min_size_m / 2)
+            max_x = center_x + (min_size_m / 2)
             width_m = min_size_m
         if height_m < min_size_m:
-            delta_lat = (min_size_m / 2.0) / m_per_deg_lat
-            min_lat = center_lat - delta_lat
-            max_lat = center_lat + delta_lat
+            min_y = center_y - (min_size_m / 2)
+            max_y = center_y + (min_size_m / 2)
             height_m = min_size_m
+
         if (width_m / height_m) < target_aspect:
-            new_width_deg = (height_m * target_aspect) / m_per_deg_lon
-            min_lon = center_lon - new_width_deg / 2.0
-            max_lon = center_lon + new_width_deg / 2.0
+            new_width = height_m * target_aspect
+            min_x = center_x - new_width / 2
+            max_x = center_x + new_width / 2
         else:
-            new_height_deg = (width_m / target_aspect) / m_per_deg_lat
-            min_lat = center_lat - new_height_deg / 2.0
-            max_lat = center_lat + new_height_deg / 2.0
-    except Exception as e: return None, None, None, f"ROI build failed ({type(e).__name__})"
+            new_height = width_m / target_aspect
+            min_y = center_y - new_height / 2
+            max_y = center_y + new_height / 2
+
+    except Exception as e: 
+        return None, None, None, f"ROI build failed ({type(e).__name__})"
+    
     try:
         if width_m < 200: image_size = (600, 400) 
+        
+        # Esri export en EPSG:3857
         esri_url = (
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
-            f"?bbox={min_lon},{min_lat},{max_lon},{max_lat}"
-            "&bboxSR=4326&imageSR=4326"
+            f"?bbox={min_x},{min_y},{max_x},{max_y}"
+            "&bboxSR=3857&imageSR=3857"
             f"&size={image_size[0]},{image_size[1]}"
             "&format=png&f=image"
         )
         resp = requests.get(esri_url, timeout=15)
         resp.raise_for_status()
         img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
-        return (img, "Esri World Imagery (High Resolution)", (min_lon, max_lon, min_lat, max_lat), None)
+        return (img, "Esri World Imagery (High Resolution)", (min_x, max_x, min_y, max_y), None)
     except Exception as e:
         if not _init_ee(): return (None, None, None, t("err_map_failed"))
         try:
-            roi = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+            # Sentinel-2 fallback en 3857
+            roi = ee.Geometry.Rectangle([min_x, min_y, max_x, max_y], proj='EPSG:3857')
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=365)
             coll = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(roi).filterDate(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
@@ -422,7 +422,7 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
             resp = requests.get(url, timeout=15)
             resp.raise_for_status()
             img = PILImage.open(io.BytesIO(resp.content)).convert("RGBA")
-            return (img, info, (min_lon, max_lon, min_lat, max_lat), None)
+            return (img, info, (min_x, max_x, min_y, max_y), None)
         except Exception as e2: return (None, None, None, t("err_map_failed"))
 
 def _bbox_overlap(a, b): return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
@@ -434,15 +434,29 @@ def _nice_scale(max_m):
         if mult * (10 ** exp) <= max_m: return int(mult * (10 ** exp))
     return int(10 ** (exp - 1)) if exp > 0 else 1
 
+# [MODIFICATION 2] : Dessin du polygone et de l'échelle en 3857
 def _draw_common(img, polygon_points, bounds, scale_m, places=None):
     draw = ImageDraw.Draw(img)
     img_w, img_h = img.size
-    min_lon, max_lon, min_lat, max_lat = bounds
-    def project(lon, lat): return ((lon - min_lon) / (max_lon - min_lon) * img_w, (max_lat - lat) / (max_lat - min_lat) * img_h)
+    min_x, max_x, min_y, max_y = bounds
+
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+
+    # La projection utilise maintenant les coordonnées 3857
+    def project(lon, lat):
+        x, y = transformer.transform(lon, lat)
+        return ((x - min_x) / (max_x - min_x) * img_w, (max_y - y) / (max_y - min_y) * img_h)
+
     if places:
         try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
         except Exception: font = ImageFont.load_default()
-        visible = [p for p in places if (min_lon <= p["lon"] <= max_lon and min_lat <= p["lat"] <= max_lat)]
+        
+        visible = []
+        for p in places:
+            px, py = transformer.transform(p["lon"], p["lat"])
+            if min_x <= px <= max_x and min_y <= py <= max_y:
+                visible.append(p)
+                
         visible.sort(key=lambda p: {"city": 0, "town": 1, "village": 2}.get(p.get("type"), 3))
         type_colors = {"city": "#FFD700", "town": "#FFA500", "village": "#FFFFFF"}
         type_sizes = {"city": 6, "town": 5, "village": 4}
@@ -463,22 +477,26 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
                 draw.text((lx, ly), place["name"], fill="#FFFFFF", font=font, stroke_width=2, stroke_fill="#000000")
                 placed_boxes.append((lx, ly, lx + lw, ly + lh))
                 break
+                
     if polygon_points and len(polygon_points) >= 3:
         coords = [project(lon, lat) for lon, lat in polygon_points]
         draw.line(coords + [coords[0]], fill="#CC0000", width=4)
         try:
-            c = Polygon(polygon_points).centroid
-            cx, cy = project(c.x, c.y)
+            poly_3857 = Polygon([transformer.transform(lon, lat) for lon, lat in polygon_points])
+            c_3857 = poly_3857.centroid
+            cx = (c_3857.x - min_x) / (max_x - min_x) * img_w
+            cy = (max_y - c_3857.y) / (max_y - min_y) * img_h
             draw.ellipse([(cx - 5, cy - 5), (cx + 5, cy + 5)], fill="#CC0000", outline="#FFFFFF", width=2)
         except Exception: pass
+        
     try:
         draw.text((img_w - 30, 10), "N", fill="#FFFFFF", anchor="mm", stroke_width=2, stroke_fill="#000000")
         draw.line([(img_w - 30, 20), (img_w - 30, 40)], fill="#FFFFFF", width=2)
         draw.polygon([(img_w - 30, 15), (img_w - 35, 25), (img_w - 25, 25)], fill="#FFFFFF")
     except Exception: pass
+    
     try:
-        _, _, width_m = Geod(ellps="WGS84").inv(min_lon, min_lat, max_lon, min_lat)
-        width_m = abs(width_m)
+        width_m = max_x - min_x
         if width_m > 0:
             pixels_per_meter = img_w / width_m
             nice_m = _nice_scale(min(scale_m, (img_w - 40) / pixels_per_meter) if scale_m else (img_w - 40) / pixels_per_meter)
@@ -550,11 +568,9 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
         safe_name, safe_id = html.escape(str(name)), html.escape(str(audit_id))
 
-        # --- LOGIQUE DE STATUT CORRIGÉE ---
         valid_statuses = ["NO POST-2020 LOSS DETECTED", "BELOW TDM SCREENING THRESHOLD", "POTENTIAL LOSS SIGNAL", "INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE", "SCREENING INCONCLUSIVE"]
         raw_status = str(eudr_status or "UNKNOWN").strip()
         
-        # Mapping pour l'affichage (La conclusion prime sur la cause technique)
         if raw_status == "INSUFFICIENT DATA" or raw_status == "SCREENING INCONCLUSIVE":
             display_status_key = "status_inconclusive"
         elif raw_status == "NO POST-2020 LOSS DETECTED":
@@ -581,7 +597,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         content.append(header_table)
         content.append(Spacer(1, 0.5 * cm))
 
-        # --- FIX: PROTECTION LAT/LON NONE ---
         if polygon_points:
             centroid_str, area_str = calculate_geometry(polygon_points)
         elif lat is not None and lon is not None:
@@ -629,23 +644,20 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
         content.append(Spacer(1, 0.5 * cm))
 
-        # --- KPI DASHBOARD ---
         tc_display, score_display = format_val(tree_cover, "%", 0, 100), format_val(risk_score, "", 0, 100)
         loss_display = get_loss_display(status_for_color, loss_year)
-        
 
-        # --- FIX: CORRECTION COULEUR BELOW TDM ---
         if "NO POST-2020" in status_for_color:
-            bg_status_color = colors.HexColor("#D1FAE5") # Soft Green
+            bg_status_color = colors.HexColor("#D1FAE5")
             status_color = "#065F46" 
         elif "BELOW TDM" in status_for_color:
-            bg_status_color = colors.HexColor("#FEF3C7") # Soft Amber (Signal mineur)
+            bg_status_color = colors.HexColor("#FEF3C7")
             status_color = "#92400E"
         elif "POTENTIAL" in status_for_color:
-            bg_status_color = colors.HexColor("#FEE2E2") # Soft Red
+            bg_status_color = colors.HexColor("#FEE2E2")
             status_color = "#991B1B" 
         elif "INSUFFICIENT" in status_for_color or "INCONCLUSIVE" in status_for_color:
-            bg_status_color = colors.HexColor("#FEF3C7") # Soft Amber
+            bg_status_color = colors.HexColor("#FEF3C7")
             status_color = "#92400E" 
         else:
             bg_status_color = TDM_GRAY
@@ -719,7 +731,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
             content.append(metrics_table)
             content.append(Spacer(1, 0.3 * cm))
 
-            # [COVERAGE] Note prudente, uniquement si le ratio dépasse 100%.
             if (isinstance(coverage_pct, (int, float)) and not isinstance(coverage_pct, bool)
                     and math.isfinite(coverage_pct) and coverage_pct > 100):
                 content.append(Paragraph(
@@ -799,7 +810,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
                 content.append(Paragraph("<br/>".join(parts), styles["TDMValue"]))
                 content.append(Paragraph(f"<font size='7' color='#888888'>{t('source_nominatim')}</font>", styles["TDMLegal"]))
         else:
-            # [FALLBACK] Formulation neutre, sans attribuer de cause.
             content.append(Spacer(1, 0.3 * cm))
             content.append(Paragraph(
                 "Territorial context could not be retrieved during report generation. "
