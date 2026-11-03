@@ -229,7 +229,7 @@ def _init_ee():
 
 def get_territorial_context(lat, lon):
     try:
-        key = (round(float(lat), 5), round(float(lon), 5))
+        key = (round(float(lat), 4), round(float(lon), 4))
     except (TypeError, ValueError):
         print("[nominatim] key=invalid state=invalid_input")
         return None
