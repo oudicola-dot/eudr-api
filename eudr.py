@@ -77,6 +77,23 @@ def _finite_number(value):
     return number if math.isfinite(number) else None
 
 
+# [AUDIT] Helper de diagnostic — ne modifie aucune variable, ne lève jamais.
+def _log_audit(lat, lon, area_ha, nominal, valid, coverage,
+               insufficient, reason, tree_cover, loss_pct, loss_year):
+    def _s(v):
+        return "None" if v is None else str(v)
+    try:
+        print(
+            f"[AUDIT] lat={_s(lat)} lon={_s(lon)} "
+            f"area_ha={_s(area_ha)} nominal={_s(nominal)} valid={_s(valid)} "
+            f"coverage={_s(coverage)} insufficient={insufficient} reason={_s(reason)} "
+            f"treecover={_s(tree_cover)} loss_pct={_s(loss_pct)} loss_year={_s(loss_year)}"
+        )
+    except Exception:
+        pass
+# [/AUDIT]
+
+
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -146,6 +163,9 @@ def compute_risk_gfw(lat: float, lon: float):
 
 def compute_risk_ee(lat: float, lon: float, polygon=None):
     if not EE_INITIALIZED:
+        # [AUDIT] Log du chemin early-exit.
+        _log_audit(lat, lon, None, None, None, None,
+                   True, "EE_NOT_INITIALIZED", -1, -1, -1)
         return None
 
     hist_insufficient = False
@@ -159,6 +179,7 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
     nominal_pixels_estimate = None
     treecover_reason = None
     tree_cover_mean_ee = -1
+    area_ha = None  # [AUDIT] initialisation défensive, sans effet sur le calcul
 
     try:
         if polygon is not None and len(polygon) >= 3:
@@ -321,6 +342,12 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         else:
             insufficient_reason = None
 
+        # [AUDIT] Log du chemin principal (succès ou données insuffisantes).
+        _log_audit(lat, lon, area_ha, nominal_pixels_estimate, valid_pixels,
+                   estimated_coverage_pct, is_loss_insufficient,
+                   insufficient_reason, tree_cover_mean_ee,
+                   loss_percentage, last_loss_year)
+
         return {
             "tree_cover_mean_ee": tree_cover_mean_ee,
             "loss_percentage": loss_percentage,
@@ -335,6 +362,10 @@ def compute_risk_ee(lat: float, lon: float, polygon=None):
         }
 
     except Exception as e:
+        # [AUDIT] Log du chemin d'erreur fatale.
+        _log_audit(lat, lon, area_ha, nominal_pixels_estimate, valid_pixels,
+                   estimated_coverage_pct, True, f"FATAL:{type(e).__name__}",
+                   tree_cover_mean_ee, loss_percentage, last_loss_year)
         print(f"❌ Earth Engine error: {e}")
         return None
 
