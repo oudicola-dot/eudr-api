@@ -508,7 +508,7 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
         places.extend(manual_places)
         
     try:
-        _draw_common(img, polygon_points, bounds, scale_m=1000, places=places, font_size=32)
+        _draw_common(img, polygon_points, bounds, scale_m=1000, places=places, font_size=18)
         img.convert("RGB").save(path, format="PNG")
         return path, info, None
     except Exception: return None, None, "Save failed"
