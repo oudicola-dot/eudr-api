@@ -48,18 +48,19 @@ TDM_GRAY = colors.HexColor("#F5F5F5")
 
 _EE_CONFIRMED = False
 
-_nominatim_cache_positive = {}   
-_nominatim_cache_blocked = set() 
-_nominatim_last_call = [0.0]
-_NOMINATIM_MIN_INTERVAL_S = 1.0   
-_NOMINATIM_GLOBAL_BUDGET_S = 20.0 
+# Caches pour LocationIQ
+_geocode_cache_positive = {}   
+_geocode_cache_blocked = set() 
+_geocode_last_call = [0.0]
+_GEOCODE_MIN_INTERVAL_S = 1.0   
+_GEOCODE_GLOBAL_BUDGET_S = 20.0 
 
-def _nominatim_rate_limit():
+def _geocode_rate_limit():
     now = time.monotonic()
-    elapsed = now - _nominatim_last_call[0]
-    if elapsed < _NOMINATIM_MIN_INTERVAL_S:
-        time.sleep(_NOMINATIM_MIN_INTERVAL_S - elapsed)
-    _nominatim_last_call[0] = time.monotonic()
+    elapsed = now - _geocode_last_call[0]
+    if elapsed < _GEOCODE_MIN_INTERVAL_S:
+        time.sleep(_GEOCODE_MIN_INTERVAL_S - elapsed)
+    _geocode_last_call[0] = time.monotonic()
 
 EN = {
     "title": "EUDR TERRITORIAL TRACEABILITY<br/>&amp; DUE DILIGENCE SUPPORT REPORT",
@@ -118,7 +119,7 @@ EN = {
     "osm_municipality": "Municipality",
     "osm_region": "Region",
     "osm_country": "Country",
-    "source_nominatim": "Source: Nominatim, OpenStreetMap",
+    "source_nominatim": "Source: LocationIQ, OpenStreetMap",
     "err_no_coords": "No coordinates",
     "err_map_failed": "Map generation failed"
 }
@@ -207,57 +208,62 @@ def get_territorial_context(lat, lon):
     try:
         key = (round(float(lat), 4), round(float(lon), 4))
     except (TypeError, ValueError):
-        print("[nominatim] key=invalid state=invalid_input")
+        print("[geocode] key=invalid state=invalid_input")
         return None
 
-    if key in _nominatim_cache_positive:
-        print(f"[nominatim] key={key} state=positive cache_hit=True")
-        return _nominatim_cache_positive[key]
+    if key in _geocode_cache_positive:
+        print(f"[geocode] key={key} state=positive cache_hit=True")
+        return _geocode_cache_positive[key]
 
-    if key in _nominatim_cache_blocked:
-        print(f"[nominatim] key={key} state=blocked cache_hit=True")
+    if key in _geocode_cache_blocked:
+        print(f"[geocode] key={key} state=blocked cache_hit=True")
         return None
 
-    headers = {"User-Agent": "TDM-EUDR-Screening/1.0 (+https://tierrasdemontana.com)"}
+    api_key = os.getenv("LOCATIONIQ_KEY")
+    if not api_key:
+        print("[geocode] ERREUR : LOCATIONIQ_KEY n'est pas configurée dans Render.")
+        return None
+
     url = (
-        f"https://nominatim.openstreetmap.org/reverse"
-        f"?format=json&lat={lat}&lon={lon}&zoom=14&addressdetails=1"
+        f"https://us1.locationiq.com/v1/reverse"
+        f"?key={api_key}&lat={lat}&lon={lon}&format=json&addressdetails=1"
     )
     start = time.monotonic()
 
     for attempt in (1, 2):
         elapsed = time.monotonic() - start
-        if elapsed >= _NOMINATIM_GLOBAL_BUDGET_S:
-            print(f"[nominatim] key={key} budget_exceeded elapsed={elapsed:.1f}s")
+        if elapsed >= _GEOCODE_GLOBAL_BUDGET_S:
+            print(f"[geocode] key={key} budget_exceeded elapsed={elapsed:.1f}s")
             return None
 
-        _nominatim_rate_limit()
+        _geocode_rate_limit()
 
         try:
-            r = requests.get(url, headers=headers, timeout=10)
+            r = requests.get(url, timeout=10)
         except requests.Timeout:
-            print(f"[nominatim] key={key} attempt={attempt} state=timeout")
+            print(f"[geocode] key={key} attempt={attempt} state=timeout")
             continue
         except Exception as e:
-            print(f"[nominatim] key={key} attempt={attempt} state=exception type={type(e).__name__}")
+            print(f"[geocode] key={key} attempt={attempt} state=exception type={type(e).__name__}")
             return None
 
         if r.status_code == 200:
             try:
-                address = r.json().get("address", {})
+                data = r.json()
+                address = data.get("address", {})
             except Exception:
-                print(f"[nominatim] key={key} attempt={attempt} state=invalid_json")
+                print(f"[geocode] key={key} attempt={attempt} state=invalid_json")
                 return None
 
             if not address:
-                print(f"[nominatim] key={key} attempt={attempt} state=empty cache_hit=False")
+                print(f"[geocode] key={key} attempt={attempt} state=empty cache_hit=False")
                 return None
 
             place_name = next(
                 (address[k] for k in ("village", "hamlet", "locality", "suburb", "neighbourhood") if address.get(k)),
                 None,
             )
-            data = {
+            result_data = {
                 "place_name": place_name,
                 "town_name": address.get("town"),
                 "city_name": address.get("city"),
@@ -265,34 +271,37 @@ def get_territorial_context(lat, lon):
                 "region": (address.get("state") or address.get("province") or address.get("region")),
                 "country": address.get("country"),
             }
-            _nominatim_cache_positive[key] = data
-            print(f"[nominatim] key={key} attempt={attempt} state=positive cache_hit=False")
-            return data
+            _geocode_cache_positive[key] = result_data
+            print(f"[geocode] key={key} attempt={attempt} state=positive cache_hit=False")
+            return result_data
 
-        if r.status_code == 403:
-            _nominatim_cache_blocked.add(key)
-            print(f"[nominatim] key={key} attempt={attempt} state=blocked_403")
+        if r.status_code == 404:
+            print(f"[geocode] key={key} attempt={attempt} state=not_found")
             return None
 
+        if r.status_code == 401:
+            print(f"[geocode] key={key} attempt={attempt} state=unauthorized (Vérifie ta clé LocationIQ)")
+            return None
+            
         if r.status_code == 429:
             ra_header = r.headers.get("Retry-After")
             try:
                 retry_after = int(ra_header) if ra_header is not None else 2
             except (TypeError, ValueError):
                 retry_after = 2
-            remaining = _NOMINATIM_GLOBAL_BUDGET_S - (time.monotonic() - start)
+            remaining = _GEOCODE_GLOBAL_BUDGET_S - (time.monotonic() - start)
             if retry_after > remaining:
-                print(f"[nominatim] key={key} attempt={attempt} state=429_abort retry_after={retry_after}s remaining={remaining:.1f}s")
+                print(f"[geocode] key={key} attempt={attempt} state=429_abort retry_after={retry_after}s remaining={remaining:.1f}s")
                 return None
-            print(f"[nominatim] key={key} attempt={attempt} state=429_wait retry_after={retry_after}s")
+            print(f"[geocode] key={key} attempt={attempt} state=429_wait retry_after={retry_after}s")
             if retry_after > 0:
                 time.sleep(retry_after)
             continue
 
-        print(f"[nominatim] key={key} attempt={attempt} state=http_{r.status_code}")
+        print(f"[geocode] key={key} attempt={attempt} state=http_{r.status_code}")
         return None
 
-    print(f"[nominatim] key={key} state=exhausted_attempts")
+    print(f"[geocode] key={key} state=exhausted_attempts")
     return None
 
 def fetch_osm_places(lat, lon, radius_m=3000):
@@ -495,7 +504,6 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
     
     places = fetch_osm_places(lat, lon, radius_m=3000)
     
-    # [MODIFICATION] On ajoute le nom trouvé par Nominatim à la liste des lieux à dessiner
     if manual_places:
         places.extend(manual_places)
         
@@ -760,7 +768,6 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
 
         terr_context = get_territorial_context(lat, lon) if lat is not None and lon is not None else None
         
-        # [MODIFICATION] On prépare le nom de la ville pour la carte
         manual_places = []
         if terr_context:
             display_name = terr_context.get("place_name") or terr_context.get("town_name") or terr_context.get("city_name") or terr_context.get("municipality_name")
