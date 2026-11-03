@@ -7,7 +7,7 @@ import time  # [NOMINATIM] pour rate-limit et budget
 import qrcode
 import requests
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak,
@@ -19,7 +19,7 @@ from reportlab.lib.enums import TA_CENTER
 
 from security import sign_audit
 from shapely.geometry import Polygon
-from pyproj import Geod, Transformer # [MODIFICATION] Ajout de Transformer
+from pyproj import Geod, Transformer 
 from eudr import get_audit
 import eudr
 
@@ -338,7 +338,6 @@ def fetch_osm_places(lat, lon, radius_m=3000):
         return unique
     except Exception: return []
 
-# [MODIFICATION 1] : Fonction mise à jour pour la projection 3857
 def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
     if not HAS_PIL or not polygon_points or len(polygon_points) < 3: return None, None, None, t("err_no_coords")
     try:
@@ -347,14 +346,12 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
         ring = [[float(p[0]), float(p[1])] for p in polygon_points]
         if ring[0] != ring[-1]: ring.append(ring[0])
         
-        # Conversion de la géométrie en 3857 (mètres)
         poly_3857 = [transformer.transform(lon, lat) for lon, lat in ring]
         min_x = min(p[0] for p in poly_3857)
         max_x = max(p[0] for p in poly_3857)
         min_y = min(p[1] for p in poly_3857)
         max_y = max(p[1] for p in poly_3857)
         
-        # Application du buffer (en mètres)
         min_x -= buffer_m
         max_x += buffer_m
         min_y -= buffer_m
@@ -391,7 +388,6 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
     try:
         if width_m < 200: image_size = (600, 400) 
         
-        # Esri export en EPSG:3857
         esri_url = (
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
             f"?bbox={min_x},{min_y},{max_x},{max_y}"
@@ -406,7 +402,6 @@ def _fetch_satellite_image(polygon_points, buffer_m, image_size=(1800, 1100)):
     except Exception as e:
         if not _init_ee(): return (None, None, None, t("err_map_failed"))
         try:
-            # Sentinel-2 fallback en 3857
             roi = ee.Geometry.Rectangle([min_x, min_y, max_x, max_y], proj='EPSG:3857')
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=365)
@@ -434,21 +429,21 @@ def _nice_scale(max_m):
         if mult * (10 ** exp) <= max_m: return int(mult * (10 ** exp))
     return int(10 ** (exp - 1)) if exp > 0 else 1
 
-# [MODIFICATION 2] : Dessin du polygone et de l'échelle en 3857
-def _draw_common(img, polygon_points, bounds, scale_m, places=None):
+# [MODIFICATION] Ajout du paramètre font_size (taille de police par défaut = 13)
+def _draw_common(img, polygon_points, bounds, scale_m, places=None, font_size=13):
     draw = ImageDraw.Draw(img)
     img_w, img_h = img.size
     min_x, max_x, min_y, max_y = bounds
 
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
 
-    # La projection utilise maintenant les coordonnées 3857
     def project(lon, lat):
         x, y = transformer.transform(lon, lat)
         return ((x - min_x) / (max_x - min_x) * img_w, (max_y - y) / (max_y - min_y) * img_h)
 
     if places:
-        try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
+        # Utilisation de la taille de police fournie
+        try: font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
         except Exception: font = ImageFont.load_default()
         
         visible = []
@@ -459,7 +454,15 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
                 
         visible.sort(key=lambda p: {"city": 0, "town": 1, "village": 2}.get(p.get("type"), 3))
         type_colors = {"city": "#FFD700", "town": "#FFA500", "village": "#FFFFFF"}
-        type_sizes = {"city": 6, "town": 5, "village": 4}
+        
+        # [MODIFICATION] On grossit aussi les points proportionnellement
+        if font_size > 20:
+            type_sizes = {"city": 12, "town": 10, "village": 8}
+            stroke_w = 3
+        else:
+            type_sizes = {"city": 6, "town": 5, "village": 4}
+            stroke_w = 2
+
         placed_boxes = []
         for place in visible:
             px, py = project(place["lon"], place["lat"])
@@ -474,7 +477,8 @@ def _draw_common(img, polygon_points, bounds, scale_m, places=None):
             for lx, ly in [(px + dot_r + 2, py - lh // 2), (px - lw - dot_r - 2, py - lh // 2), (px - lw // 2, py - lh - dot_r - 2), (px - lw // 2, py + dot_r + 2)]:
                 if (lx < 5 or ly < 5 or lx + lw > img_w - 5 or ly + lh > img_h - 5): continue
                 if any(_bbox_overlap((lx, ly, lx + lw, ly + lh), ob) for ob in placed_boxes): continue
-                draw.text((lx, ly), place["name"], fill="#FFFFFF", font=font, stroke_width=2, stroke_fill="#000000")
+                # [MODIFICATION] stroke_width plus épais si la police est grande
+                draw.text((lx, ly), place["name"], fill="#FFFFFF", font=font, stroke_width=stroke_w, stroke_fill="#000000")
                 placed_boxes.append((lx, ly, lx + lw, ly + lh))
                 break
                 
@@ -518,7 +522,8 @@ def generate_context_map(polygon_points, lat, lon, path, buffer_m=2500, image_si
     if img is None: return None, None, error
     places = fetch_osm_places(lat, lon, radius_m=3000)
     try:
-        _draw_common(img, polygon_points, bounds, scale_m=1000, places=places)
+        # [MODIFICATION] On force font_size=32 pour la 2ème carte (contexte)
+        _draw_common(img, polygon_points, bounds, scale_m=1000, places=places, font_size=32)
         img.convert("RGB").save(path, format="PNG")
         return path, info, None
     except Exception: return None, None, "Save failed"
@@ -562,7 +567,8 @@ def generate_eudr_pdf(audit_id, name, lat, lon, risk_score, risk_level, eudr_sta
         doc = SimpleDocTemplate(file_path, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
         styles = get_custom_styles()
         content = []
-        current_date = datetime.now().strftime("%d %b %Y – %H:%M")
+        
+        current_date = datetime.now(timezone.utc).strftime("%d %b %Y – %H:%M UTC")
 
         signature = sign_audit(audit_id)
         verify_url = f"{BASE_URL}/eudr/verify/{audit_id}?signature={signature}"
